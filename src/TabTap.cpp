@@ -326,7 +326,7 @@ void SetupTrayIcon(HWND hwnd)
 // Load Image Resource
 bool LoadImageResource()
 {
-	g_pApplicationImage = new Gdiplus::Image(_T("c:\\TabTap.png"));
+	g_pApplicationImage = new Gdiplus::Image(_T("TabTap.png"));
 	if (g_pApplicationImage->GetLastStatus() != Gdiplus::Ok)
 	{
 		MessageBox(NULL, _T("Failed to load PNG image."), _T("Error"), MB_OK | MB_ICONERROR);
