@@ -22,8 +22,8 @@
 #define IDM_TRAY_SEPARATOR		1001
 
 
-HWND g_hWndMain; // Handle to the main application window
-HWND g_hWndOsk; // Handle to the on-screen keyboard window
+HWND g_hWndMain{}; // Handle to the main application window
+HWND g_hWndOsk{}; // Handle to the on-screen keyboard window
 ULONG_PTR g_gdiplusToken; // Token for GDI+ initialization
 Gdiplus::Image* g_pApplicationImage{}; // Pointer to the application's image resource
 
@@ -32,18 +32,24 @@ NOTIFYICONDATA g_notifyIconData{}; // Data for the system tray icon
 SIZE g_wndCollapsedSize{ 7, 95 }; // Size of the window in collapsed state
 SIZE g_wndExpandedSize{ 29, 95 }; // Size of the window in expanded state
 
-TCHAR g_wndClassName[] = _T("TabTapMainClass"); // Class name for the main application window
 TCHAR g_applicationPath[MAX_PATH]; // Buffer to store the path to the main application executable
-TCHAR g_applicationRegKey[] = _T("SOFTWARE\\Empurple\\TabTap"); // Registry subkey for application settings
-TCHAR g_autoStartRegKey[] = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run"); // Autorun registry subkey
+const TCHAR g_wndClassName[] = _T("TabTapMainClass"); // Class name for the main application window
+const TCHAR g_applicationRegKey[] = _T("SOFTWARE\\Empurple\\TabTap"); // Registry subkey for application settings
+const TCHAR g_autoStartRegKey[] = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run"); // Autorun registry subkey
 
 TCHAR g_oskExecutablePathEX[MAX_PATH]; // Buffer to store the full path to the on-screen keyboard
-TCHAR g_oskExecutablePath[] = _T("%WINDIR%\\System32\\osk.exe"); // Default path to the on-screen keyboard executable
-TCHAR g_oskRegKey[] = _T("SOFTWARE\\Microsoft\\Osk"); // Registry subkey for on-screen keyboard settings
-TCHAR g_oskWndClassName[] = _T("OSKMainClass"); // Class name for the on-screen keyboard window
+const TCHAR g_oskExecutablePath[] = _T("%WINDIR%\\System32\\osk.exe"); // Default path to the on-screen keyboard executable
+const TCHAR g_oskRegKey[] = _T("SOFTWARE\\Microsoft\\Osk"); // Registry subkey for on-screen keyboard settings
+const TCHAR g_oskWndClassName[] = _T("OSKMainClass"); // Class name for the on-screen keyboard window
 
 HMENU g_hTrayContextMenu; // Handle to the context menu for the system tray icon
 bool isForAllUsers{}; // Indicates whether the application is installed for all users
+
+
+// Function pointer types for the exported functions.
+typedef BOOL(*CloseOSKFunc)();
+typedef BOOL(*LaunchOSKFunc)();
+
 
 
 void Cleanup()
@@ -122,7 +128,7 @@ void DrawImageOnLayeredWindow(HWND hwnd, bool isWindowExpanded)
 	ReleaseDC(NULL, hdcScreen);
 }
 
-void CreateTrayPopupMenu(HWND hWnd)
+void CreateTrayPopupMenu()
 {
 	g_hTrayContextMenu = CreatePopupMenu();
 	// Check state
@@ -136,57 +142,26 @@ void CreateTrayPopupMenu(HWND hWnd)
 	AppendMenu(g_hTrayContextMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
 }
 
-void UpdateOSKPosition(HWND hWnd, RECT& mainWindowRect, DWORD& oskWindowHeight)
+void UpdateOSKPosition()
 {
-	GetWindowRect(hWnd, &mainWindowRect);
+	DWORD oskWindowHeight;
+	RECT mainWindowRect;
+	LONG oskNewTop;
 	ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowHeight"), &oskWindowHeight);
-	LONG oskNewTop = mainWindowRect.top - ((LONG)oskWindowHeight - g_wndCollapsedSize.cy) / 2;
+	GetWindowRect(g_hWndMain, &mainWindowRect);
+	oskNewTop = mainWindowRect.top - ((LONG)oskWindowHeight - g_wndCollapsedSize.cy) / 2;
 	oskNewTop = max(0L, min(GetSystemMetrics(SM_CYSCREEN) - (int)oskWindowHeight, oskNewTop));
 	WriteRegistry(isForAllUsers, g_oskRegKey, _T("WindowTop"), &oskNewTop, REG_DWORD);
 }
 
-void HideFromTaskbar(bool value)
-{
-	LONG_PTR style = GetWindowLongPtr(g_hWndOsk, GWL_EXSTYLE);
-	style = value ? (style & ~WS_EX_APPWINDOW) : (style | WS_EX_APPWINDOW);
-	SetWindowLong(g_hWndOsk, GWL_EXSTYLE, style);
-}
-
-void HideMinButton(bool value)
-{
-	LONG_PTR style = GetWindowLongPtr(g_hWndOsk, GWL_STYLE);
-	style = value ? (style & ~WS_MINIMIZEBOX) : (style | WS_MINIMIZEBOX);
-	SetWindowLong(g_hWndOsk, GWL_STYLE, style);
-}
-
-void SetupOSK(PROCESS_INFORMATION& g_processInfo, STARTUPINFO& g_startupInfo)
-{
-	ZeroMemory(&g_startupInfo, sizeof(g_startupInfo));
-	ZeroMemory(&g_processInfo, sizeof(g_processInfo));
-	g_startupInfo.cb = sizeof(g_startupInfo);
-	g_startupInfo.dwFlags = STARTF_USESHOWWINDOW;
-	g_startupInfo.wShowWindow = SW_SHOWNA;
-	//oskStartupInfo.wShowWindow = SW_HIDE;	// Cause flickering
-}
 
 LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
 	static bool isMouseTracking{};
 	static bool isDragging{};
-	static bool isOskLoading{};
 	static bool isWindowExpanded{}; // Tracks whether the window is expanded or collapsed
 	static POINT dragStartPoint{};
 	static RECT mainWindowRect;
-	static DWORD oskWindowHeight;
-	static PROCESS_INFORMATION oskProcessInfo; // Information about the launched process
-	static STARTUPINFO oskStartupInfo; // Startup information for the launched process
-
-	// Wait for OSK handle is avalible, then use it.
-	if (isOskLoading and (g_hWndOsk = FindWindow(g_oskWndClassName, NULL))) {
-		HideFromTaskbar(true);
-		HideMinButton(true);
-		isOskLoading = false;
-	}
 
 	switch (uMsg)
 	{
@@ -244,7 +219,6 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	}
 	case WM_MBUTTONDOWN:
 	{
-		g_hWndOsk = FindWindow(g_oskWndClassName, NULL);
 		break;
 	}
 	case WM_MBUTTONUP:
@@ -254,31 +228,20 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	}
 	case WM_LBUTTONDOWN:
 	{
-		g_hWndOsk = FindWindow(g_oskWndClassName, NULL);
 		break;
 	}
 	case WM_LBUTTONUP:
 	{
-		if (g_hWndOsk) {
-			if (IsIconic(g_hWndOsk)) {
-				ShowWindowAsync(g_hWndOsk, SW_RESTORE); // Restore OSK
-			}
-			else if (IsWindowVisible(g_hWndOsk)) {
-				ShowWindowAsync(g_hWndOsk, SW_HIDE); // Hide OSK
-			}
-			else {
-				UpdateOSKPosition(hWnd, mainWindowRect, oskWindowHeight);
-				ShowWindowAsync(g_hWndOsk, SW_SHOWNA); // Show OSK
-			}
+		if (IsIconic(g_hWndOsk)) {
+			UpdateOSKPosition();
+			ShowWindowAsync(g_hWndOsk, SW_RESTORE); // Restore OSK
+		}
+		else if (IsWindowVisible(g_hWndOsk)) {
+			ShowWindowAsync(g_hWndOsk, SW_HIDE); // Hide OSK
 		}
 		else {
-			UpdateOSKPosition(hWnd, mainWindowRect, oskWindowHeight);
-			if (!CreateProcess(g_oskExecutablePathEX, NULL, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &oskStartupInfo, &oskProcessInfo)) {
-				MessageBox(NULL, _T("Failed to start osk.exe!"), _T("Error"), MB_OK | MB_ICONERROR); // Run OSK
-			}
-			CloseHandle(oskProcessInfo.hThread);
-			CloseHandle(oskProcessInfo.hProcess);
-			isOskLoading = true;
+			UpdateOSKPosition();
+			ShowWindowAsync(g_hWndOsk, SW_SHOWNA); // Show OSK
 		}
 		break;
 	}
@@ -287,7 +250,7 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		isMouseTracking = false;
 		if (!isDragging && isWindowExpanded) {
 			GetWindowRect(hWnd, &mainWindowRect);
-			SetWindowPos(hWnd, NULL, 0, mainWindowRect.top, g_wndCollapsedSize.cx, g_wndCollapsedSize.cy, SWP_NOMOVE | SWP_NOZORDER);
+			SetWindowPos(hWnd, HWND_TOPMOST, 0, mainWindowRect.top, g_wndCollapsedSize.cx, g_wndCollapsedSize.cy, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 			isWindowExpanded = false;
 			DrawImageOnLayeredWindow(hWnd, isWindowExpanded);
 		}
@@ -296,8 +259,7 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_TRAYICON:
 	{
 		if (lParam == WM_LBUTTONUP) {
-			GetWindowRect(hWnd, &mainWindowRect);
-			SendMessage(hWnd, WM_LBUTTONUP, 0, MAKELPARAM(mainWindowRect.left, mainWindowRect.top));
+			SendMessage(hWnd, WM_LBUTTONUP, 0, 0);
 		}
 		else if (lParam == WM_RBUTTONUP) {
 			POINT cursorPosition;
@@ -326,20 +288,13 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	}
 	case WM_CREATE:
 	{
-		if (g_hWndOsk = FindWindow(g_oskWndClassName, NULL)) {
-			SendMessage(g_hWndOsk, WM_CLOSE, 0, 0);
-		}
-		SetupOSK(oskProcessInfo, oskStartupInfo);
-		CreateTrayPopupMenu(hWnd);
+		CreateTrayPopupMenu();
 		break;
 	}
 	case WM_DESTROY:
 	{
-		g_hWndOsk = FindWindow(g_oskWndClassName, NULL);
-		if (g_hWndOsk) {
-			SendMessage(g_hWndOsk, WM_CLOSE, 0, 0); // Close OSK
-		}
-		UpdateOSKPosition(hWnd, mainWindowRect, oskWindowHeight);
+		SendMessage(g_hWndOsk, WM_CLOSE, 0, 0); // Close OSK
+		UpdateOSKPosition();
 		Cleanup();
 		PostQuitMessage(0);
 		return 0;
@@ -349,7 +304,8 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 }
 
 
-HICON LoadIconFromExe(const TCHAR* exePath, int iconIndex) {
+HICON LoadIconFromExe(const TCHAR* exePath, int iconIndex)
+{
 	return ExtractIcon(NULL, exePath, iconIndex);
 }
 
@@ -388,7 +344,7 @@ HWND CreateLayeredWindow(HINSTANCE hInstance, const wchar_t* className)
 	DWORD regData{};
 	int screenHeight = GetSystemMetrics(SM_CYSCREEN);
 	bool result = ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowTop"), &regData);
-	regData = result ? min(regData, screenHeight - g_wndCollapsedSize.cy) : 0;
+	regData = result ? min((LONG)regData, screenHeight - g_wndCollapsedSize.cy) : 0;
 
 	return CreateWindowEx(
 		WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -429,6 +385,12 @@ int WINAPI WinMain(
 	_In_ LPSTR lpCmdLine,
 	_In_ int nCmdShow)
 {
+	if (g_hWndMain = FindWindow(g_wndClassName, NULL)) {
+		SendMessage(g_hWndMain, WM_LBUTTONUP, 0, 0);
+		return 0;
+	}
+
+
 	if (!ExpandEnvironmentStrings(g_oskExecutablePath, g_oskExecutablePathEX, MAX_PATH)) {
 		MessageBox(NULL, _T("Failed to expand osk.exe path!"), _T("Error"), MB_OK | MB_ICONERROR);
 		wprintf(_T("Cannot expand path (%d)\n"), GetLastError());
@@ -459,12 +421,57 @@ int WINAPI WinMain(
 	ShowWindow(g_hWndMain, nCmdShow);
 	DrawImageOnLayeredWindow(g_hWndMain, false);
 
+
+// Hook load begin
+	HMODULE hDll;
+	if (!(hDll = LoadLibrary(_T("TabTap.dll")))) {
+		wprintf(_T("Failed to load the hook DLL (%d)\n"), GetLastError());
+		return 1;
+	}
+
+	CloseOSKFunc CloseOSK = (CloseOSKFunc)GetProcAddress(hDll, "CloseOSK");
+	LaunchOSKFunc LaunchOSK = (LaunchOSKFunc)GetProcAddress(hDll, "LaunchOSK");
+
+	if (!CloseOSK or !LaunchOSK) {
+		wprintf(_T("Failed to locate OSKLauncher function.\n"));
+		FreeLibrary(hDll);
+		return 1;
+	}
+	if (!LaunchOSK()) {
+		wprintf(_T("OSK loading failed.\n"));
+		return 1;
+	}
+// Hook load end
+
+	//Wait until osk loaded.
+	const int sleepTime{ 20 };
+	int maxWaitTime{ 3000 };
+	int cycleCnt{};
+	while (!(g_hWndOsk = FindWindow(g_oskWndClassName, NULL)))
+	{
+		if (cycleCnt * sleepTime >= maxWaitTime) {
+			MessageBox(NULL, _T("Failed to find osk window."), _T("Error"), MB_OK | MB_ICONERROR);
+			return 1;
+		}
+		Sleep(sleepTime);
+		++cycleCnt;
+	}
+
+
 	MSG msg;
 	while (GetMessage(&msg, nullptr, 0, 0))
 	{
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
 	}
+
+
+// Hook unload begin
+	if (!CloseOSK()) {
+		wprintf(_T("OSK unload failed.\n"));
+		return 1;
+	}
+// Hook unload end
 
 	return 0;
 }
