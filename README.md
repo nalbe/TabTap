@@ -24,11 +24,8 @@ Inspired by the Windows 7 TabTip On-Screen Keyboard, this project is a lightweig
 
 ## Limitations
 
-- **Event interception workaround:**  
-  The wrapper cannot directly intercept OSK events; a workaround is implemented to handle this limitation.
-
 - **No animations:**  
-  Due to technical constraints inherited from the underlying OSK, animations are not supported.
+  Work on it.
 
 ## Installation
 
