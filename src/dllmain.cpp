@@ -185,11 +185,6 @@ LRESULT CALLBACK SubclassedWndProc(
 		ShowWindow(hWnd, SW_HIDE);
 		return 0;
 	}
-	case WM_SIZE:
-	{
-		lParam = MAKELPARAM(LOWORD(lParam) + 100, HIWORD(lParam));
-		return 0;
-	}
 
 	}
 	return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
