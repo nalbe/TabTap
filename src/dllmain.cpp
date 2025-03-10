@@ -1,6 +1,9 @@
 #include <windows.h>
 
+
+
 //#define LOG
+
 #ifdef LOG
 
 HANDLE hFile = CreateFile(
@@ -22,12 +25,10 @@ CRITICAL_SECTION g_csLog;              // Serialize log access
 
 #endif // LOG
 
-#define OSK_CLASSNAME       L"OSKMainClass"
-#define OSK_APPPATH         L"%WINDIR%\\System32\\osk.exe"
 
 HINSTANCE g_hInstance = NULL;          // DLL instance
 HHOOK g_hHook = NULL;                  // CBT hook handle
-WNDPROC originalWndProc = NULL;        // Original window procedure for subclassing
+WNDPROC g_originalWndProc = NULL;        // Original window procedure for subclassing
 
 
 LRESULT CALLBACK CBTProc(int, WPARAM, LPARAM);
@@ -88,6 +89,7 @@ BOOL LogSuccess(LPCWSTR message)
 
 #endif // LOG
 
+extern "C" __declspec(dllexport)
 BOOL UninstallHook()
 {
 	if (!g_hHook) {
@@ -102,17 +104,12 @@ BOOL UninstallHook()
 #endif // LOG
 		return FALSE;
 	}
-#ifdef LOG
-	if (hFile) {
-		LogSuccess(L"Hook removed successfully.");
-		CloseHandle(hFile);
-	}
-#endif // LOG
 	g_hHook = NULL;
 
 	return TRUE;
 }
 
+extern "C" __declspec(dllexport)
 BOOL InstallHook(DWORD threadId)
 {
 	g_hHook = SetWindowsHookEx(
@@ -123,91 +120,6 @@ BOOL InstallHook(DWORD threadId)
 	);
 
 	return (g_hHook != NULL);
-}
-
-extern "C" __declspec(dllexport)
-BOOL CloseOSK()
-{
-	if (!UninstallHook()) {
-		return FALSE;
-	}
-	HWND hWnd = FindWindow(OSK_CLASSNAME, NULL);
-	if (hWnd) {
-		SendMessage(hWnd, WM_CLOSE, 0, 0); // Close OSK
-		return TRUE;
-	}
-	return FALSE;
-}
-
-extern "C" __declspec(dllexport)
-BOOL LaunchOSK()
-{
-	WCHAR g_oskExecutablePathEX[MAX_PATH];
-	if (!ExpandEnvironmentStrings(OSK_APPPATH, g_oskExecutablePathEX, MAX_PATH)) {
-#ifdef LOG
-		LogError(L"Cannot expand executable path.");
-#endif // LOG
-		return FALSE;
-	}
-
-	PROCESS_INFORMATION processInfo{};
-	STARTUPINFO startupInfo{};
-	startupInfo.cb = sizeof(startupInfo);
-	startupInfo.dwFlags = STARTF_USESHOWWINDOW;
-	//startupInfo.wShowWindow = SW_SHOWNA;
-	startupInfo.wShowWindow = SW_HIDE;
-
-	if (!CreateProcess(
-		g_oskExecutablePathEX,
-		NULL,
-		NULL,
-		NULL,
-		FALSE,
-		0, // alt CREATE_SUSPENDED
-		NULL,
-		NULL,
-		&startupInfo,
-		&processInfo
-	))
-	{
-#ifdef LOG
-		LogError(L"Create Process failed.");
-#endif // LOG
-		return FALSE;
-	}
-
-	DWORD result = WaitForInputIdle(processInfo.hProcess, 3000);
-	if (result == WAIT_TIMEOUT) {
-#ifdef LOG
-		LogError(L"The wait of the Process was terminated because the time-out interval elapsed.");
-#endif // LOG
-		CloseHandle(processInfo.hThread);
-		CloseHandle(processInfo.hProcess);
-		return FALSE;
-	}
-	if (result == WAIT_FAILED) {
-#ifdef LOG
-		LogError(L"Failed to wait for the Process.");
-#endif // LOG
-		CloseHandle(processInfo.hThread);
-		CloseHandle(processInfo.hProcess);
-		return FALSE;
-	}
-
-	if (!InstallHook(processInfo.dwThreadId)) {
-#ifdef LOG
-		LogError(L"Failed to Set Windows Hook.");
-#endif // LOG
-		return FALSE;
-	}
-
-	CloseHandle(processInfo.hThread);
-	CloseHandle(processInfo.hProcess);
-#ifdef LOG
-	LogSuccess(L"Hook installed successfully.");
-#endif // LOG
-
-	return TRUE;
 }
 
 
@@ -221,6 +133,7 @@ BOOL APIENTRY DllMain(
 	case DLL_PROCESS_ATTACH:
 	{
 		g_hInstance = hInstance;
+		DisableThreadLibraryCalls(hInstance); // Optional: Improve performance
 #ifdef LOG
 		InitializeCriticalSection(&g_csLog);
 #endif // LOG
@@ -252,7 +165,7 @@ BOOL APIENTRY DllMain(
 
 
 LRESULT CALLBACK SubclassedWndProc(
-	HWND hwnd,
+	HWND hWnd,
 	UINT msg,
 	WPARAM wParam,
 	LPARAM lParam)
@@ -261,35 +174,44 @@ LRESULT CALLBACK SubclassedWndProc(
 	{
 	case WM_CLOSE:
 	{
-		ShowWindow(hwnd, SW_HIDE);
+		if ((BOOL)lParam == TRUE) { // Real event
+			break;
+		}
+		ShowWindow(hWnd, SW_HIDE);
 		return 0;
 	}
 	case WM_NCMBUTTONUP:
 	{
-		ShowWindow(hwnd, SW_HIDE);
+		ShowWindow(hWnd, SW_HIDE);
 		return 0;
 	}
+	case WM_SIZE:
+	{
+		lParam = MAKELPARAM(LOWORD(lParam) + 100, HIWORD(lParam));
+		return 0;
 	}
-	return CallWindowProc(originalWndProc, hwnd, msg, wParam, lParam);
+
+	}
+	return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
 }
+
 
 LRESULT CALLBACK CBTProc(
 	int nCode,
 	WPARAM wParam,
 	LPARAM lParam)
 {
-
 	if (nCode < 0)
 	{
 		return CallNextHookEx(g_hHook, nCode, wParam, lParam);
 	}
 	if (nCode == HCBT_ACTIVATE)
 	{
-		HWND hwnd = (HWND)wParam;
-		static TCHAR szClassName[MAX_PATH]{};
+		HWND hWnd = (HWND)wParam;
+		TCHAR szClassName[MAX_PATH]{};
 
 		// Retrieve the window class name.
-		if (GetClassName(hwnd, szClassName, sizeof(szClassName) / sizeof(TCHAR)))
+		if (GetClassName(hWnd, szClassName, sizeof(szClassName) / sizeof(TCHAR)))
 		{
 			// Check if the class name is "OSKMainClass".
 			if (wcscmp(szClassName, L"OSKMainClass") == 0)
@@ -300,77 +222,59 @@ LRESULT CALLBACK CBTProc(
 				{
 					bProcessed = true;
 
-					WNDPROC currentWndProc = (WNDPROC)GetWindowLongPtr(
-						(HWND)wParam,
+					// Store the original window procedure.
+					g_originalWndProc = (WNDPROC)GetWindowLongPtr(
+						hWnd,
 						GWLP_WNDPROC
 					);
 
-					// Store the original window procedure and subclass.
-					originalWndProc = currentWndProc;
+					// Replace original proc.
 					SetWindowLongPtr(
-						(HWND)wParam,
+						hWnd,
 						GWLP_WNDPROC,
 						(LONG_PTR)SubclassedWndProc
 					);
 
 					// Remove taskbar entry.
-					LONG_PTR exstyle = GetWindowLongPtr((HWND)wParam, GWL_EXSTYLE);
+					LONG_PTR exstyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
 					exstyle &= ~WS_EX_APPWINDOW;
-					SetWindowLong((HWND)wParam, GWL_EXSTYLE, exstyle);
+					SetWindowLong(hWnd, GWL_EXSTYLE, exstyle);
 
 					// Remove minimize button.
-					LONG_PTR style = GetWindowLongPtr((HWND)wParam, GWL_STYLE);
+					LONG_PTR style = GetWindowLongPtr(hWnd, GWL_STYLE);
 					style &= ~WS_MINIMIZEBOX;
-					SetWindowLong((HWND)wParam, GWL_STYLE, style);
+					SetWindowLong(hWnd, GWL_STYLE, style);
 
 					// Apply style changes.
-					SetWindowPos((HWND)wParam, nullptr, 0, 0, 0, 0,
+					SetWindowPos(hWnd, nullptr, 0, 0, 0, 0,
 						SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 
-					ShowWindowAsync((HWND)wParam, NULL);
+
+					// Increment DLL reference count
+					HMODULE hMod;
+					if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)SubclassedWndProc, &hMod)) {
+						WCHAR dllPath[MAX_PATH];
+						GetModuleFileName(hMod, dllPath, MAX_PATH);
+						LoadLibrary(dllPath); // Increments ref count
+					}
+
+					ShowWindowAsync(hWnd, NULL);
+
+					// Open the named event created by the first app
+					HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE, L"OSKLoadEvent");
+					if (hEvent != NULL) {
+						// Signal the event indicating that this app has finished loading
+						SetEvent(hEvent);
+						CloseHandle(hEvent);
+					}
+					else {
+						// Handle error if the event doesn't exist
+					}
 				}
 			}
 		}
 		return 0;
 	}
-
-
-
-/*
-		WNDPROC currentWndProc = (WNDPROC)GetWindowLongPtr(
-			(HWND)wParam,
-			GWLP_WNDPROC
-		);
-
-		// Check if the window is already subclassed.
-		if (currentWndProc != SubclassedWndProc) {
-			// Store the original window procedure and subclass.
-			originalWndProc = currentWndProc;
-			SetWindowLongPtr(
-				(HWND)wParam,
-				GWLP_WNDPROC,
-				(LONG_PTR)SubclassedWndProc
-			);
-			
-			// Remove taskbar entry.
-			LONG_PTR exstyle = GetWindowLongPtr((HWND)wParam, GWL_EXSTYLE);
-			exstyle &= ~WS_EX_APPWINDOW;
-			SetWindowLong((HWND)wParam, GWL_EXSTYLE, exstyle);
-
-			// Remove minimize button.
-			LONG_PTR style = GetWindowLongPtr((HWND)wParam, GWL_STYLE);
-			style &= ~WS_MINIMIZEBOX;
-			SetWindowLong((HWND)wParam, GWL_STYLE, style);
-
-			// Apply style changes.
-			SetWindowPos((HWND)wParam, nullptr, 0, 0, 0, 0,
-				SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-
-			ShowWindowAsync((HWND)wParam, NULL);
-		}
-		return 0;
-	}
-*/
 
 	return CallNextHookEx(g_hHook, nCode, wParam, lParam);
 }
