@@ -17,48 +17,50 @@
 #endif
 
 
-//#define WM_EXIT                 (WM_USER + 1)
-#define WM_TRAYICON				(WM_APP + 1)
-#define IDM_TRAY_AUTOSTART		1003
-#define IDM_TRAY_EXIT			1002
-#define IDM_TRAY_SEPARATOR		1001
+// Define custom command IDs
+#define ID_SYNC_OSK_Y_POSITION   (WM_USER + 1)
+
+
+#define WM_TRAYICON				 (WM_APP + 1)
+#define IDM_TRAY_AUTOSTART		 1003
+#define IDM_TRAY_EXIT			 1002
+#define IDM_TRAY_SEPARATOR		 1001
 #ifdef _DEBUG
-#define IMAGE_PATH              _T("C:\\TabTap.png")
+#define IMAGE_PATH               _T("C:\\TabTap.png")
 #else
-#define IMAGE_PATH              _T("TabTap.png")
+#define IMAGE_PATH               _T("TabTap.png")
 #endif // _DEBUG
 
 
 HWND g_hWndMain{}; // Handle to the main application window
-HWND g_hWndOsk{}; // Handle to the on-screen keyboard window
-ULONG_PTR g_gdiplusToken{}; // Token for GDI+ initialization
-Gdiplus::Image* g_pApplicationImage{}; // Pointer to the application's image resource
-
-NOTIFYICONDATA g_notifyIconData{}; // Data for the system tray icon
-HMENU g_hTrayContextMenu{}; // Handle to the context menu for the system tray icon
-HMODULE hDll{};
-PROCESS_INFORMATION processInfo{};
-STARTUPINFO startupInfo{};
-
-const SIZE g_wndCollapsedSize{ 7, 95 }; // Size of the window in collapsed state
-const SIZE g_wndExpandedSize{ 29, 95 }; // Size of the window in expanded state
-
 TCHAR g_mainExecPath[MAX_PATH];       // Buffer to store the path to the main application executable
 const TCHAR g_mainName[]           = _T("TabTap"); // Application name
 const TCHAR g_mainWndClassName[]   = _T("TabTapMainClass"); // Class name for the main application window
 const TCHAR g_mainRegKey[]         = _T("SOFTWARE\\Empurple\\TabTap"); // Registry subkey for application settings
 const TCHAR g_autoStartRegKey[]    = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run"); // Autorun registry subkey
 
+const SIZE g_mainWndSizeCollapsed{ 7, 95 }; // Size of the Main Window in collapsed state
+const SIZE g_mainWndSizeExpanded{ 29, 95 }; // Size of the Main Window in expanded state
+
+HWND g_hWndOsk{}; // Handle to the on-screen keyboard window
 TCHAR g_oskExecPathEX[MAX_PATH]; // Buffer to store the full path to the on-screen keyboard
 const TCHAR g_oskExecPath[]        = _T("%WINDIR%\\System32\\osk.exe"); // Default path to the on-screen keyboard executable
 const TCHAR g_oskRegKey[]          = _T("SOFTWARE\\Microsoft\\Osk"); // Registry subkey for on-screen keyboard settings
 const TCHAR g_oskWndClassName[]    = _T("OSKMainClass"); // Class name for the on-screen keyboard window
 
+ULONG_PTR g_gdiplusToken{}; // Token for GDI+ initialization
+Gdiplus::Image* g_pApplicationImage{}; // Pointer to the application's image resource
+NOTIFYICONDATA g_notifyIconData{}; // Data for the system tray icon
+HMENU g_hTrayContextMenu{}; // Handle to the context menu for the system tray icon
+HMODULE hDll{};
+PROCESS_INFORMATION processInfo{};
+STARTUPINFO startupInfo{};
+
 bool isForAllUsers{}; // Indicates whether registry operations should use HKEY_LOCAL_MACHINE (true) or HKEY_CURRENT_USER (false)
 RECT g_mainWindowRect{}; // Stores main window position
 
 
-// Cleans up global resources used by the application.
+// Cleans up global resources used by the window.
 void Cleanup()
 {
 	// Destroy context menu.
@@ -105,6 +107,10 @@ void ExitError()
 		CloseHandle(processInfo.hProcess);
 		processInfo.hProcess = NULL;
 	}
+	// Close OSK if it is open.
+	if (g_hWndOsk = FindWindow(g_oskWndClassName, NULL)) {
+		PostMessage(g_hWndOsk, WM_CLOSE, 0, (LPARAM)TRUE);
+	}
 }
 
 DWORD ErrorHandler(const TCHAR* message, DWORD errorCode = 0)
@@ -121,7 +127,7 @@ DWORD ErrorHandler(const TCHAR* message, DWORD errorCode = 0)
 
 void DrawImageOnLayeredWindow(HWND hwnd, bool isWindowExpanded)
 {
-	SIZE sizeWnd = isWindowExpanded ? g_wndExpandedSize : g_wndCollapsedSize;
+	SIZE sizeWnd = isWindowExpanded ? g_mainWndSizeExpanded : g_mainWndSizeCollapsed;
 
 	HDC hdcScreen = GetDC(NULL);
 	HDC hdcMem = CreateCompatibleDC(hdcScreen);
@@ -157,8 +163,8 @@ void DrawImageOnLayeredWindow(HWND hwnd, bool isWindowExpanded)
 	graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
 
 	// Determine cropping parameters:
-	int srcLeft = isWindowExpanded ? 0 : g_pApplicationImage->GetWidth() - g_wndCollapsedSize.cx;
-	int srcWidth = isWindowExpanded ? g_wndExpandedSize.cx : g_wndCollapsedSize.cx;
+	int srcLeft = isWindowExpanded ? 0 : g_pApplicationImage->GetWidth() - g_mainWndSizeCollapsed.cx;
+	int srcWidth = isWindowExpanded ? g_mainWndSizeExpanded.cx : g_mainWndSizeCollapsed.cx;
 
 	graphics.DrawImage(g_pApplicationImage, 0, 0, srcLeft, 0, srcWidth, g_pApplicationImage->GetHeight(), Gdiplus::UnitPixel);
 
@@ -194,13 +200,16 @@ void CreateTrayPopupMenu()
 	AppendMenu(g_hTrayContextMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
 }
 
-void UpdateOSKPosition(RECT& mainWindowRect)
+void UpdateOSKPosition()
 {
 	DWORD oskWindowHeight;
-	LONG oskNewTop; // Clamp position within screen bounds
+	LONG oskNewTop;
+	if (g_hWndMain) {
+		GetWindowRect(g_hWndMain, &g_mainWindowRect);
+	}
 	ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowHeight"), &oskWindowHeight);
-	oskNewTop = mainWindowRect.top - ((LONG)oskWindowHeight - g_wndCollapsedSize.cy) / 2;
-	oskNewTop = max(0L, min(GetSystemMetrics(SM_CYSCREEN) - (int)oskWindowHeight, oskNewTop));
+	oskNewTop = g_mainWindowRect.top - ((LONG)oskWindowHeight - g_mainWndSizeCollapsed.cy) / 2;
+	oskNewTop = max(0L, min(GetSystemMetrics(SM_CYSCREEN) - (int)oskWindowHeight, oskNewTop)); // Clamp position within screen bounds
 	WriteRegistry(isForAllUsers, g_oskRegKey, _T("WindowTop"), &oskNewTop, REG_DWORD);
 }
 
@@ -244,15 +253,15 @@ LRESULT CALLBACK WindowProc(
 			ClientToScreen(hWnd, &cursorPosition);
 			int newWindowTop = g_mainWindowRect.top + cursorPosition.y - dragStartPoint.y;
 			int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-			newWindowTop = max(0, min(newWindowTop, screenHeight - g_wndExpandedSize.cy));
-			int currentWidth = isWindowExpanded ? g_wndExpandedSize.cx : g_wndCollapsedSize.cx;
-			SetWindowPos(hWnd, NULL, 0, newWindowTop, currentWidth, g_wndExpandedSize.cy, SWP_NOZORDER | SWP_NOACTIVATE);
+			newWindowTop = max(0, min(newWindowTop, screenHeight - g_mainWndSizeExpanded.cy));
+			int currentWidth = isWindowExpanded ? g_mainWndSizeExpanded.cx : g_mainWndSizeCollapsed.cx;
+			SetWindowPos(hWnd, NULL, 0, newWindowTop, currentWidth, g_mainWndSizeExpanded.cy, SWP_NOZORDER | SWP_NOACTIVATE);
 			DrawImageOnLayeredWindow(hWnd, isWindowExpanded);
 		}
 		else if (!isWindowExpanded)
 		{
 			GetWindowRect(hWnd, &g_mainWindowRect);
-			SetWindowPos(hWnd, NULL, 0, g_mainWindowRect.top, g_wndExpandedSize.cx, g_wndCollapsedSize.cy, SWP_NOMOVE | SWP_NOZORDER);
+			SetWindowPos(hWnd, NULL, 0, g_mainWindowRect.top, g_mainWndSizeExpanded.cx, g_mainWndSizeCollapsed.cy, SWP_NOMOVE | SWP_NOZORDER);
 			isWindowExpanded = true;
 			DrawImageOnLayeredWindow(hWnd, isWindowExpanded);
 		}
@@ -286,16 +295,14 @@ LRESULT CALLBACK WindowProc(
 	case WM_LBUTTONUP:
 	{
 		if (IsIconic(g_hWndOsk)) {
-			GetWindowRect(g_hWndMain, &g_mainWindowRect);
-			UpdateOSKPosition(g_mainWindowRect);
+			UpdateOSKPosition();
 			ShowWindowAsync(g_hWndOsk, SW_RESTORE); // Restore OSK
 		}
 		else if (IsWindowVisible(g_hWndOsk)) {
 			ShowWindowAsync(g_hWndOsk, SW_HIDE); // Hide OSK
 		}
 		else {
-			GetWindowRect(g_hWndMain, &g_mainWindowRect);
-			UpdateOSKPosition(g_mainWindowRect);
+			UpdateOSKPosition();
 			ShowWindowAsync(g_hWndOsk, SW_SHOWNA); // Show OSK
 		}
 		break;
@@ -305,7 +312,7 @@ LRESULT CALLBACK WindowProc(
 		isMouseTracking = false;
 		if (!isDragging && isWindowExpanded) {
 			GetWindowRect(hWnd, &g_mainWindowRect);
-			SetWindowPos(hWnd, HWND_TOPMOST, 0, g_mainWindowRect.top, g_wndCollapsedSize.cx, g_wndCollapsedSize.cy, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+			SetWindowPos(hWnd, HWND_TOPMOST, 0, g_mainWindowRect.top, g_mainWndSizeCollapsed.cx, g_mainWndSizeCollapsed.cy, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 			isWindowExpanded = false;
 			DrawImageOnLayeredWindow(hWnd, isWindowExpanded);
 		}
@@ -348,13 +355,47 @@ LRESULT CALLBACK WindowProc(
 	}
 	case WM_DESTROY:
 	{
-		SendMessage(g_hWndOsk, WM_CLOSE, 0, (LPARAM)TRUE);
+		PostMessage(g_hWndOsk, WM_CLOSE, 0, (LPARAM)TRUE);
 		GetWindowRect(g_hWndMain, &g_mainWindowRect);
 
-		Cleanup();
 		PostQuitMessage(0);
 		return 0;
 	}
+	case ID_SYNC_OSK_Y_POSITION:
+	{
+		static bool is_process{};
+		// Centers the main window vertically relative to the OSK window
+		if (!is_process) {
+			RECT oskWndRect;
+			GetWindowRect(g_hWndOsk, &oskWndRect);
+			GetWindowRect(hWnd, &g_mainWindowRect);
+			lParam = MAKELPARAM(
+				1,	// Local message marker
+				oskWndRect.top + (oskWndRect.bottom - oskWndRect.top - g_mainWndSizeCollapsed.cy) / 2 // Target CY
+			);
+			is_process = true;
+		}
+		if (LOWORD(lParam)) {
+			if (g_mainWindowRect.top != HIWORD(lParam)) {
+				SetWindowPos(hWnd, NULL,
+					g_mainWindowRect.left,
+					g_mainWindowRect.top < HIWORD(lParam) ? ++g_mainWindowRect.top : --g_mainWindowRect.top,
+					0, 0,
+					SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE
+				);
+				PostMessage(
+					hWnd,
+					ID_SYNC_OSK_Y_POSITION,
+					wParam, lParam
+				);
+			}
+			else {
+				is_process = false;
+			}
+		}
+		break;
+	}
+
 	}
 	return DefWindowProc(hWnd, uMsg, wParam, lParam);
 }
@@ -391,11 +432,15 @@ BOOL LoadImageResource()
 // Create Layered Window
 HWND CreateLayeredWindow(HINSTANCE hInstance)
 {
-	// Read start coords from registry
-	DWORD regData{};
+	// Retrieve and adjusts the main window vertical position based on registry-stored values
+	// Ensure it remains on-screen and match on-screen keyboard's vertical center
+	DWORD position{};
+	DWORD oskWindowHeight{};
 	int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-	bool result = ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowTop"), &regData);
-	regData = result ? min((LONG)regData, screenHeight - g_wndCollapsedSize.cy) : 0;
+	bool result = ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowTop"), &position);
+	position = result ? min((LONG)position, screenHeight - g_mainWndSizeCollapsed.cy) : 0;
+	result = ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowHeight"), &oskWindowHeight);
+	position += (oskWindowHeight - g_mainWndSizeCollapsed.cy) / 2;
 
 	return CreateWindowEx(
 		WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -403,9 +448,9 @@ HWND CreateLayeredWindow(HINSTANCE hInstance)
 		g_mainName,
 		WS_POPUP,
 		0,
-		regData,
-		g_wndCollapsedSize.cx,
-		g_wndCollapsedSize.cy,
+		position,
+		g_mainWndSizeCollapsed.cx,
+		g_mainWndSizeCollapsed.cy,
 		(HWND)NULL, (HMENU)NULL, hInstance, (LPVOID)NULL
 	);
 }
@@ -429,6 +474,51 @@ BOOL InitializeGDIPlus()
 	return gdiStatus == Gdiplus::Ok;
 }
 
+BOOL IsTaskbarWindow(HWND hWnd) {
+	TCHAR szClassName[256];
+	GetClassName(hWnd, szClassName, _countof(szClassName));
+
+
+	HANDLE hFile = CreateFile(
+		L"C:\\hooklog.txt",
+		FILE_APPEND_DATA,
+		FILE_SHARE_READ | FILE_SHARE_WRITE,
+		NULL,
+		OPEN_ALWAYS,
+		FILE_ATTRIBUTE_NORMAL,
+		NULL
+	);
+
+	DWORD dwBytesToWrite = lstrlen(szClassName) * sizeof(WCHAR);
+	DWORD dwBytesWritten = 0;
+
+	WriteFile(hFile, szClassName, dwBytesToWrite, &dwBytesWritten, NULL);
+	WriteFile(hFile, L"\r\n", 4, &dwBytesWritten, NULL);
+	CloseHandle(hFile);
+
+
+
+
+	// Check against known taskbar class names
+	return (_tcscmp(szClassName, _T("Shell_TrayWnd")) == 0) ||
+		(_tcscmp(szClassName, _T("Shell_SecondaryTrayWnd")) == 0) ||
+		(_tcscmp(szClassName, _T("ApplicationManager_DesktopShellWindow")) == 0);
+}
+
+HWND GetTrueForegroundWindow() {
+	// Get the thread ID of the foreground window
+	HWND hForeground = GetForegroundWindow();
+	DWORD dwForegroundThreadId = GetWindowThreadProcessId(hForeground, NULL);
+
+	// Get GUI thread info for the foreground window's thread
+	GUITHREADINFO guiInfo = { sizeof(GUITHREADINFO) };
+	if (GetGUIThreadInfo(dwForegroundThreadId, &guiInfo)) {
+		return guiInfo.hwndActive; // True active window
+	}
+
+	// Fallback to GetForegroundWindow()
+	return hForeground;
+}
 
 // Main Entry Point
 int WINAPI WinMain(
@@ -439,12 +529,12 @@ int WINAPI WinMain(
 {
 	// Check program is already running.
 	if (g_hWndMain = FindWindow(g_mainWndClassName, NULL)) {
-		SendMessage(g_hWndMain, WM_LBUTTONUP, 0, 0);
+		PostMessage(g_hWndMain, WM_LBUTTONUP, 0, 0);
 		return ERROR_ALREADY_EXISTS;
 	}
 	// Close OSK if it is open.
 	if (g_hWndOsk = FindWindow(g_oskWndClassName, NULL)) {
-		SendMessage(g_hWndOsk, WM_CLOSE, 0, 0);
+		SendMessage(g_hWndOsk, WM_CLOSE, 0, (LPARAM)TRUE);
 	}
 
 
@@ -483,7 +573,7 @@ int WINAPI WinMain(
 
 
 // HOOK INITIALIZATION BEGIN
-	if (!(hDll = LoadLibrary(_T("hook.dll")))) {
+	if (!(hDll = LoadLibrary(_T("CBTHook.dll")))) {
 		return ErrorHandler(_T("The specified module could not be found."), ERROR_MOD_NOT_FOUND);
 	}
 
@@ -545,7 +635,7 @@ int WINAPI WinMain(
 	}
 
 	// Wait for the event to be signaled.
-	WaitForSingleObject(hEvent, INFINITE);
+	result = WaitForSingleObject(hEvent, 3000);
 	if (result == WAIT_TIMEOUT) {
 		CloseHandle(hEvent);
 		return ErrorHandler(_T("The wait time-out interval elapsed."), WAIT_TIMEOUT);
@@ -572,7 +662,6 @@ int WINAPI WinMain(
 		return ErrorHandler(_T("Failed to Find Window."), -1);
 	}
 
-
 	MSG msg;
 	while (GetMessage(&msg, nullptr, 0, 0))
 	{
@@ -580,6 +669,7 @@ int WINAPI WinMain(
 		DispatchMessage(&msg);
 	}
 
+	Cleanup();
 
 	result = WaitForSingleObject(processInfo.hProcess, 3000);
 	if (result == WAIT_TIMEOUT) {
@@ -589,7 +679,7 @@ int WINAPI WinMain(
 		return ErrorHandler(_T("Failed to wait for the Process."), WAIT_FAILED);
 	}
 
-	UpdateOSKPosition(g_mainWindowRect);
+	UpdateOSKPosition(); // NOTE: Last main rect update was in WM_DESTROY
 
 	CloseHandle(processInfo.hThread);
 	CloseHandle(processInfo.hProcess);
