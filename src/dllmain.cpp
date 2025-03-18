@@ -1,12 +1,41 @@
 #include <windows.h>
 
 
-//#define USE_LOG
+// Define GET_X_LPARAM and GET_Y_LPARAM if not available.
+#ifndef GET_X_LPARAM
+#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#endif
+#ifndef GET_Y_LPARAM
+#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#endif
 
+// Define custom command IDs
+#define ID_SYNC_OSK_Y_POSITION       (WM_USER + 1)
+#define ID_DIRECTUI_HWND_CREATED     (WM_USER + 2)
+
+// Store globals
+HINSTANCE g_hInstance             = NULL; // DLL instance
+HHOOK g_hHook                     = NULL; // CBT hook handle
+HWND g_hTabTapMainWnd             = NULL; // TabTapMainClass handle
+HWND g_hDirectUIWnd               = NULL; // DirectUIHWnd handle
+HWND g_hOSKMainWnd                = NULL; // OSKMainClass handle
+const TCHAR g_oskExecPath[]       = L"%WINDIR%\\System32\\osk.exe"; // Default path to the on-screen keyboard executable
+
+WNDPROC g_origOSKMainWndProc      = NULL; // Original OSKMainClass window procedure
+WNDPROC g_origDirectUIWndProc     = NULL; // Original DirectUIHWND window procedure
+HICON g_hOSKIcon                  = NULL; // Use icon provided in osk.exe
+
+
+// Forward declarations
+LRESULT CALLBACK CBTProc(int, WPARAM, LPARAM);
+
+
+//#define USE_LOG
 #ifdef USE_LOG
+#define LOG_PATH      L"C:\\hooklog.txt"
 
 HANDLE hFile = CreateFile(
-	L"C:\\hooklog.txt",
+	LOG_PATH,
 	FILE_APPEND_DATA,
 	FILE_SHARE_READ | FILE_SHARE_WRITE,
 	NULL,
@@ -22,27 +51,6 @@ CRITICAL_SECTION g_csLog; // Serialize log access
 #define NEWLINE                L"\r\n"
 #define NEWLINE_LEN            (ARRAYSIZE(NEWLINE) - 1)
 
-#endif // USE_LOG
-
-// Define custom command IDs
-#define ID_SYNC_OSK_Y_POSITION       (WM_USER + 1)
-#define ID_DIRECTUI_HWND_CREATED     (WM_USER + 2)
-
-
-HINSTANCE g_hInstance             = NULL; // DLL instance
-HHOOK g_hHook                     = NULL; // CBT hook handle
-HWND g_hTabTapWnd                 = NULL; // First app handle
-HWND g_hOSKMainWnd                = NULL; // OSKMain handle
-HWND g_hDirectUIWnd               = NULL; // DirectUIHWnd handle
-
-WNDPROC g_origMainWndProc         = NULL; // Original OSKMainClass window procedure
-WNDPROC g_origDirectUIWndProc     = NULL; // Original DirectUIHWND window procedure
-
-
-LRESULT CALLBACK CBTProc(int, WPARAM, LPARAM);
-
-
-#ifdef USE_LOG
 
 BOOL WriteString(LPCWSTR message, DWORD cchMessage = 0)
 {
@@ -156,7 +164,6 @@ BOOL APIENTRY DllMain(
 }
 
 
-
 LRESULT CALLBACK DirectUIWndProc(
 	HWND hWnd,
 	UINT msg,
@@ -167,7 +174,12 @@ LRESULT CALLBACK DirectUIWndProc(
 	{
 	case WM_RBUTTONUP:
 	{
-		// TODO
+		PostMessage(g_hOSKMainWnd, WM_RBUTTONUP, wParam, lParam);
+		break;
+	}
+	case WM_MBUTTONDOWN:
+	{
+		PostMessage(g_hOSKMainWnd, WM_MBUTTONDOWN, wParam, lParam);
 		break;
 	}
 	default:
@@ -183,55 +195,129 @@ LRESULT CALLBACK MainWndProc(
 	WPARAM wParam,
 	LPARAM lParam)
 {
+	static bool g_isDragging{};
+	static POINT g_dragStartCursorPos{};
+	static RECT g_dragStartWindowRect{};
+
 	switch (msg)
 	{
-
-	case WM_CLOSE:
+	case WM_MOUSEACTIVATE:
 	{
-		if ((BOOL)lParam == TRUE) { // Real event
-			break;
+		return MA_NOACTIVATE; // Block ALL activation attempts (client/non-client)
+	}
+	case WM_ACTIVATE:
+	{
+		if (wParam != WA_INACTIVE) {
+			PostMessage(hWnd, WM_KILLFOCUS, 0, 0); // Force deactivate if somehow activated
 		}
-		ShowWindow(hWnd, SW_HIDE);
 		return 0;
 	}
-	case WM_NCMBUTTONUP:
+	case WM_MOUSEMOVE:
 	{
-		ShowWindow(hWnd, SW_HIDE);
-		return 0;
+		if (g_isDragging) {
+			POINT ptCursor;
+			GetCursorPos(&ptCursor); // Get cursor screen coordinates
+			SetWindowPos(            // Original position + delta
+				g_hOSKMainWnd, NULL,
+				g_dragStartWindowRect.left + (ptCursor.x - g_dragStartCursorPos.x),
+				g_dragStartWindowRect.top + (ptCursor.y - g_dragStartCursorPos.y),
+				0, 0,
+				SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+			);
+		}
+		break;
 	}
 	case WM_NCMBUTTONDOWN:
 	{
-		if (g_hTabTapWnd) {
-			PostMessage(
-				g_hTabTapWnd,
-				ID_SYNC_OSK_Y_POSITION,
-				0, 0
-			);
+		if (wParam == HTCLOSE) {
+			return 0;
+		}
+		if (wParam == HTSYSMENU) {
+			//MessageBox(hWnd, L"System menu icon clicked!", L"Detected", MB_OK);
+			return 0;
+		}
+		SendMessage(hWnd, WM_MBUTTONDOWN, wParam, lParam); // Move action
+		break;
+	}
+	case WM_NCMBUTTONUP:
+	{
+		if (wParam == HTCLOSE) {
+			PostMessage(g_hTabTapMainWnd, ID_SYNC_OSK_Y_POSITION, 0, 0);
+			ShowWindow(hWnd, SW_HIDE);
+			return 0;  // Prevent default behavior
+		}
+		break;
+	}
+	case WM_NCLBUTTONDOWN:
+	{
+		break;
+	}
+	case WM_NCLBUTTONUP: // NOTE: Skips first trigger for some reason
+	{
+		break;
+	}
+	case WM_MBUTTONDOWN:
+	{
+		SetCapture(g_hOSKMainWnd); // Redirect all mouse input to this window
+		GetCursorPos(&g_dragStartCursorPos);
+		GetWindowRect(g_hOSKMainWnd, &g_dragStartWindowRect);
+		g_isDragging = true;
+		return 0;
+	}
+	case WM_MBUTTONUP:
+	{
+		if (g_isDragging) {
+			ReleaseCapture();
+			g_isDragging = false;
 		}
 		return 0;
+	}
+	case WM_RBUTTONUP:
+	{
+		return 0; // Message handled
+	}
+	case WM_CLOSE:
+	{
+		if ((BOOL)lParam == TRUE) { // Real close event
+			break;
+		}
+		ShowWindow(hWnd, SW_HIDE);
+		return 0; // Message handled
+	}
+	case WM_CAPTURECHANGED:
+	{
+		if ((HWND)lParam != hWnd) { // Fallback: Ensure capture is released if mouse is lost
+			g_isDragging = false;
+		}
+		break;
 	}
 	case ID_DIRECTUI_HWND_CREATED:
 	{
 		if (!g_hDirectUIWnd) {
-			return 0;
+			break;
 		}
 		// Store the original window procedure.
 		g_origDirectUIWndProc = reinterpret_cast<WNDPROC>(
 			GetWindowLongPtr(g_hDirectUIWnd, GWLP_WNDPROC)
 			);
-
 		// Subclass DirectUIHWND
 		SetWindowLongPtr(
 			g_hDirectUIWnd,
 			GWLP_WNDPROC,
 			(LONG_PTR)DirectUIWndProc
 		);
-		return 0;
+		break;
 	}
+	case WM_DESTROY:
+	{
+		DestroyIcon(g_hOSKIcon);
+		break;
+	}
+
 	default:
 		break;
 	}
-	return CallWindowProc(g_origMainWndProc, hWnd, msg, wParam, lParam);
+	return CallWindowProc(g_origOSKMainWndProc, hWnd, msg, wParam, lParam);
 }
 
 
@@ -293,7 +379,7 @@ LRESULT CALLBACK CBTProc(
 
 
 			// Store the original window procedure.
-			g_origMainWndProc = (WNDPROC)GetWindowLongPtr(
+			g_origOSKMainWndProc = (WNDPROC)GetWindowLongPtr(
 				hWnd,
 				GWLP_WNDPROC
 			);
@@ -306,17 +392,23 @@ LRESULT CALLBACK CBTProc(
 			);
 
 
-			// Remove taskbar entry.
-			LONG_PTR exstyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
-			exstyle &= ~WS_EX_APPWINDOW;
-			SetWindowLong(hWnd, GWL_EXSTYLE, exstyle);
-
-			// Remove minimize button.
+			// Edit Style.
 			LONG_PTR style = GetWindowLongPtr(hWnd, GWL_STYLE);
 			style &= ~WS_MINIMIZEBOX;
-			SetWindowLong(hWnd, GWL_STYLE, style);
+			style &= ~WS_TABSTOP;        // NOTE: nothing happen
+			style &= ~WS_POPUP;	         // NOTE: nothing happen
+			SetWindowLongPtr(hWnd, GWL_STYLE, style);
 
-			// Edit the system menu
+			// Edit ExStyle.
+			LONG_PTR exstyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
+			exstyle &= ~WS_EX_APPWINDOW;
+			exstyle |= WS_EX_NOACTIVATE; // NOTE: nothing happen
+			//exstyle |= WS_EX_TOOLWINDOW;
+			//exstyle |= WS_EX_LAYERED;
+			//exstyle |= WS_EX_TOPMOST;
+			SetWindowLongPtr(hWnd, GWL_EXSTYLE, exstyle);
+
+			// Edit System Menu.
 			HMENU hSysMenu = GetSystemMenu(hWnd, FALSE);
 			DeleteMenu(hSysMenu, SC_RESTORE, MF_BYCOMMAND);
 			DeleteMenu(hSysMenu, SC_MINIMIZE, MF_BYCOMMAND);
@@ -328,7 +420,7 @@ LRESULT CALLBACK CBTProc(
 
 
 			// Store the first app handle as global
-			g_hTabTapWnd = FindWindow(L"TabTapMainClass", NULL);
+			g_hTabTapMainWnd = FindWindow(L"TabTapMainClass", NULL);
 
 			// Store the main handle as global
 			g_hOSKMainWnd = hWnd;
@@ -343,6 +435,9 @@ LRESULT CALLBACK CBTProc(
 				GetModuleFileName(hMod, dllPath, MAX_PATH);
 				LoadLibrary(dllPath); // Increments ref count
 			}
+
+			// Load Icon from exe
+			ExtractIconEx(g_oskExecPath, 0, &g_hOSKIcon, NULL, 1);
 		}
 		return 0;
 	}

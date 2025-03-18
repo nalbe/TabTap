@@ -227,6 +227,11 @@ LRESULT CALLBACK WindowProc(
 
 	switch (uMsg)
 	{
+	case WM_TIMER:
+	{
+		SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+		break;
+	}
 	case WM_SETCURSOR:
 	{
 		SetCursor(LoadCursor(NULL, IDC_ARROW));
@@ -351,6 +356,7 @@ LRESULT CALLBACK WindowProc(
 	case WM_CREATE:
 	{
 		CreateTrayPopupMenu();
+		SetTimer(hWnd, 1, 3000, NULL); // 3000ms interval
 		break;
 	}
 	case WM_DESTROY:
@@ -447,10 +453,7 @@ HWND CreateLayeredWindow(HINSTANCE hInstance)
 		g_mainWndClassName,
 		g_mainName,
 		WS_POPUP,
-		0,
-		position,
-		g_mainWndSizeCollapsed.cx,
-		g_mainWndSizeCollapsed.cy,
+		0, position, g_mainWndSizeCollapsed.cx, g_mainWndSizeCollapsed.cy,
 		(HWND)NULL, (HMENU)NULL, hInstance, (LPVOID)NULL
 	);
 }
@@ -462,6 +465,7 @@ ATOM RegisterWindowClass(HINSTANCE hInstance)
 	wc.lpfnWndProc = WindowProc;
 	wc.hInstance = hInstance;
 	wc.lpszClassName = g_mainWndClassName;
+	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
 	wc.hbrBackground = (HBRUSH)GetStockObject(NULL_BRUSH);
 	return RegisterClass(&wc);
 }
@@ -474,6 +478,7 @@ BOOL InitializeGDIPlus()
 	return gdiStatus == Gdiplus::Ok;
 }
 
+/*
 BOOL IsTaskbarWindow(HWND hWnd) {
 	TCHAR szClassName[256];
 	GetClassName(hWnd, szClassName, _countof(szClassName));
@@ -519,6 +524,7 @@ HWND GetTrueForegroundWindow() {
 	// Fallback to GetForegroundWindow()
 	return hForeground;
 }
+*/
 
 // Main Entry Point
 int WINAPI WinMain(
