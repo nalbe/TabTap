@@ -22,10 +22,12 @@ Inspired by the Windows 7 TabTip On-Screen Keyboard, this project is a lightweig
 - **Autostart capability:**  
   Optionally configure the wrapper to launch automatically with Windows.
 
+- **Forced Dock Mode:**  
+  It's like dock mode but with drag ability. The size can be adjusted before switching to it. The right button is for dragging, and the middle button is for sensitive dragging..
+
 ## Limitations
 
-- **No animations:**  
-  Work on it.
+- **No animations:**
 
 ## Installation
 
