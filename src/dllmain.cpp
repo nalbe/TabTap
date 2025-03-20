@@ -9,9 +9,18 @@
 #define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
 #endif
 
+
+// Define Messages Source code
+#define MENU            (0)
+#define ACCELERATOR     (1)
+#define CONTROL         (2)
+
 // Define custom command IDs
-#define ID_SYNC_OSK_Y_POSITION       (WM_USER + 1)
-#define ID_DIRECTUI_HWND_CREATED     (WM_USER + 2)
+#define IDM_APP_SYNC_Y_POSITION      (WM_APP + 1)
+#define IDM_APP_DIRECTUI_CREATED     (WM_APP + 2)
+#define IDM_APP_DOCKMODE             (WM_APP + 3)
+#define IDM_APP_REGULARMODE          (WM_APP + 4)
+
 
 // Store globals
 HINSTANCE g_hInstance             = NULL; // DLL instance
@@ -55,7 +64,7 @@ CRITICAL_SECTION g_csLog; // Serialize log access
 BOOL WriteString(LPCWSTR message, DWORD cchMessage = 0)
 {
 	DWORD dwBytesToWrite = (cchMessage ? cchMessage : lstrlen(message)) * sizeof(WCHAR);
-	DWORD dwBytesWritten = 0;
+	DWORD dwBytesWritten{};
 	return WriteFile(hFile, message, dwBytesToWrite, &dwBytesWritten, NULL)
 		and (dwBytesWritten == dwBytesToWrite);
 }
@@ -63,19 +72,17 @@ BOOL WriteString(LPCWSTR message, DWORD cchMessage = 0)
 BOOL WriteDWORD(DWORD dwValue)
 {
 	WCHAR buffer[20];  // Enough for any int
-	DWORD dwBytesWritten{};
 	return WriteString(buffer, wsprintf(buffer, L"%d", dwValue));
 }
 
-BOOL LogError(LPCWSTR message, BOOL useLastError = TRUE)
+BOOL LogError(LPCWSTR message, DWORD error = ERROR_SUCCESS)
 {
 	EnterCriticalSection(&g_csLog);
-	DWORD lastErrorCode = useLastError ? GetLastError() : 0;
 	BOOL bSuccess{};
 
 	if (!WriteString(message) or
 		!WriteString(ERROR_CODE_PREFIX, ERROR_CODE_PREFIX_LEN) or
-		!WriteDWORD(lastErrorCode) or
+		!WriteDWORD(error) or
 		!WriteString(NEWLINE, NEWLINE_LEN))
 	{
 		bSuccess = FALSE;
@@ -101,7 +108,7 @@ BOOL UninstallHook()
 	}
 	if (!UnhookWindowsHookEx(g_hHook)) {
 #ifdef USE_LOG
-		LogError(L"Failed to remove hook.");
+		LogError(L"Failed to remove hook.", GetLastError());
 #endif // USE_LOG
 		return FALSE;
 	}
@@ -120,7 +127,13 @@ BOOL InstallHook(DWORD threadId)
 		threadId
 	);
 
-	return (g_hHook != NULL);
+	if (!g_hHook) {
+#ifdef USE_LOG
+		LogError(L"Failed to set windows hook.");
+#endif // USE_LOG
+		return FALSE;
+	}
+	return TRUE;
 }
 
 
@@ -164,23 +177,40 @@ BOOL APIENTRY DllMain(
 }
 
 
+
+
 LRESULT CALLBACK DirectUIWndProc(
 	HWND hWnd,
 	UINT msg,
 	WPARAM wParam,
 	LPARAM lParam)
 {
+	// Since the keys belong to DirectUIHWND, some capturing should occur here
 	switch (msg)
 	{
+
+	/*
+	case WM_STYLECHANGING: // Has no effect
+	case WM_SIZE: // Has no effect
+	case WM_RBUTTONDBLCLK: // Has no effect (Require the CS_DBLCLKS)
+	*/
+
+	case WM_RBUTTONDOWN:
+	{
+		// Simulate the WM_RBUTTONDOWN event for the parent window
+		PostMessage(g_hOSKMainWnd, WM_MBUTTONDOWN, wParam, lParam);
+		return 0;
+	}
 	case WM_RBUTTONUP:
 	{
-		PostMessage(g_hOSKMainWnd, WM_RBUTTONUP, wParam, lParam);
-		break;
+		// If SetCapture() is called on button down, catch button up in MainWndProc.
+		return 0;
 	}
 	case WM_MBUTTONDOWN:
 	{
+		// Simulate the same event for the parent window
 		PostMessage(g_hOSKMainWnd, WM_MBUTTONDOWN, wParam, lParam);
-		break;
+		return 0;
 	}
 	default:
 		break;
@@ -189,7 +219,7 @@ LRESULT CALLBACK DirectUIWndProc(
 }
 
 
-LRESULT CALLBACK MainWndProc(
+LRESULT CALLBACK OSKMainWndProc(
 	HWND hWnd,
 	UINT msg,
 	WPARAM wParam,
@@ -201,23 +231,44 @@ LRESULT CALLBACK MainWndProc(
 
 	switch (msg)
 	{
-	case WM_MOUSEACTIVATE:
+
+	/*
+	case WM_MOUSEACTIVATE: // Has no effect
+	case WM_ACTIVATE: // Has no effect
+	case WM_SIZING: // Has no effect
+	case WM_SIZE: // Affect DirectUI redraw
+	case WM_WINDOWPOSCHANGED: // Affect DirectUI redraw
+	case WM_GETMINMAXINFO: // Allow resizing the window to any values (currently buggy)
+	*/
+
+	case WM_STYLECHANGING:
 	{
-		return MA_NOACTIVATE; // Block ALL activation attempts (client/non-client)
+		if (wParam == GWL_STYLE) {
+			// Forced frame for `Dock` mode
+			//((STYLESTRUCT*)lParam)->styleNew |= WS_THICKFRAME;
+		}
+		break;
 	}
-	case WM_ACTIVATE:
+	case WM_WINDOWPOSCHANGING:
 	{
-		if (wParam != WA_INACTIVE) {
-			PostMessage(hWnd, WM_KILLFOCUS, 0, 0); // Force deactivate if somehow activated
+		// Prevent changing the size and position when enabling `Dock` mode
+		if (((PWINDOWPOS)lParam)->cx == GetSystemMetrics(SM_CXSCREEN)) {
+			((PWINDOWPOS)lParam)->flags = (NULL
+				| SWP_NOSIZE
+				| SWP_NOMOVE
+				| SWP_NOACTIVATE
+				| SWP_NOSENDCHANGING
+				);
 		}
 		return 0;
 	}
 	case WM_MOUSEMOVE:
 	{
+		// Drag implementation
 		if (g_isDragging) {
 			POINT ptCursor;
 			GetCursorPos(&ptCursor); // Get cursor screen coordinates
-			SetWindowPos(            // Original position + delta
+			SetWindowPos( // Original position + delta
 				g_hOSKMainWnd, NULL,
 				g_dragStartWindowRect.left + (ptCursor.x - g_dragStartCursorPos.x),
 				g_dragStartWindowRect.top + (ptCursor.y - g_dragStartCursorPos.y),
@@ -229,20 +280,29 @@ LRESULT CALLBACK MainWndProc(
 	}
 	case WM_NCMBUTTONDOWN:
 	{
+		// Repositioning the First App on middle button down of the 'X'
 		if (wParam == HTCLOSE) {
+			PostMessage(
+				g_hTabTapMainWnd,
+				WM_COMMAND,
+				MAKEWPARAM(IDM_APP_SYNC_Y_POSITION, CONTROL),
+				(LPARAM)hWnd
+			);
 			return 0;
 		}
+		// TODO
 		if (wParam == HTSYSMENU) {
 			//MessageBox(hWnd, L"System menu icon clicked!", L"Detected", MB_OK);
 			return 0;
 		}
-		SendMessage(hWnd, WM_MBUTTONDOWN, wParam, lParam); // Move action
+		// In general, it simulates a middle click in the client zone
+		SendMessage(hWnd, WM_MBUTTONDOWN, wParam, lParam); // Drag trigger
 		break;
 	}
 	case WM_NCMBUTTONUP:
 	{
+		// Hiding the OSK on middle button up of the 'X'
 		if (wParam == HTCLOSE) {
-			PostMessage(g_hTabTapMainWnd, ID_SYNC_OSK_Y_POSITION, 0, 0);
 			ShowWindow(hWnd, SW_HIDE);
 			return 0;  // Prevent default behavior
 		}
@@ -252,12 +312,13 @@ LRESULT CALLBACK MainWndProc(
 	{
 		break;
 	}
-	case WM_NCLBUTTONUP: // NOTE: Skips first trigger for some reason
+	case WM_NCLBUTTONUP: // It skips the first trigger for some reason
 	{
 		break;
 	}
 	case WM_MBUTTONDOWN:
 	{
+		// Drag begin
 		SetCapture(g_hOSKMainWnd); // Redirect all mouse input to this window
 		GetCursorPos(&g_dragStartCursorPos);
 		GetWindowRect(g_hOSKMainWnd, &g_dragStartWindowRect);
@@ -266,6 +327,7 @@ LRESULT CALLBACK MainWndProc(
 	}
 	case WM_MBUTTONUP:
 	{
+		// Drag end
 		if (g_isDragging) {
 			ReleaseCapture();
 			g_isDragging = false;
@@ -274,11 +336,13 @@ LRESULT CALLBACK MainWndProc(
 	}
 	case WM_RBUTTONUP:
 	{
-		return 0; // Message handled
+		PostMessage(hWnd, WM_MBUTTONUP, wParam, lParam); // Drag stop trigger
+		return 0;
 	}
 	case WM_CLOSE:
 	{
-		if ((BOOL)lParam == TRUE) { // Real close event
+		// Change the 'X' button’s behavior from 'Close' to 'Hide' and use lParam to indicate a real 'Close' event
+		if ((BOOL)lParam == TRUE) { // Abuse lParam for custom behavior
 			break;
 		}
 		ShowWindow(hWnd, SW_HIDE);
@@ -286,31 +350,84 @@ LRESULT CALLBACK MainWndProc(
 	}
 	case WM_CAPTURECHANGED:
 	{
-		if ((HWND)lParam != hWnd) { // Fallback: Ensure capture is released if mouse is lost
+		// Fallback: Ensure capture is released if mouse is lost
+		if ((HWND)lParam != hWnd) {
 			g_isDragging = false;
 		}
 		break;
 	}
-	case ID_DIRECTUI_HWND_CREATED:
+	case WM_COMMAND:
 	{
-		if (!g_hDirectUIWnd) {
-			break;
+		if (HIWORD(wParam) == CONTROL) {
+			if (LOWORD(wParam) == IDM_APP_DIRECTUI_CREATED) {
+				//Subclass DirectUIHWND here, right after the CREATEWND event
+				if (!g_hDirectUIWnd) {
+					break;
+				}
+				// Store the original window procedure.
+				g_origDirectUIWndProc = reinterpret_cast<WNDPROC>(
+					GetWindowLongPtr(g_hDirectUIWnd, GWLP_WNDPROC)
+					);
+				// Subclass DirectUIHWND
+				SetWindowLongPtr(
+					g_hDirectUIWnd,
+					GWLP_WNDPROC,
+					(LONG_PTR)DirectUIWndProc
+				);
+				return 0;
+			}
+			else if (LOWORD(wParam) == IDM_APP_DOCKMODE) {
+				ShowWindow(hWnd, SW_HIDE);
+				LONG_PTR style = (NULL
+					//| WS_VISIBLE
+					| WS_CLIPSIBLINGS
+					| WS_CLIPCHILDREN
+					| WS_SYSMENU
+					//| WS_MINIMIZEBOX
+					);
+				SetWindowLongPtr(hWnd, GWL_STYLE, style);
+
+				LONG_PTR exstyle = (NULL
+					| WS_EX_NOACTIVATE
+					| WS_EX_LAYERED
+					//| WS_EX_APPWINDOW
+					| WS_EX_WINDOWEDGE
+					| WS_EX_TOOLWINDOW
+					| WS_EX_TOPMOST
+					);
+				SetWindowLongPtr(hWnd, GWL_EXSTYLE, exstyle);
+				ShowWindow(hWnd, SW_SHOW);
+				return 0;
+			}
+			else if (LOWORD(wParam) == IDM_APP_REGULARMODE) {
+				ShowWindow(hWnd, SW_HIDE);
+				LONG_PTR style = (NULL
+					//| WS_VISIBLE
+					| WS_CLIPSIBLINGS
+					| WS_CLIPCHILDREN
+					| WS_BORDER
+					| WS_DLGFRAME
+					| WS_SYSMENU
+					| WS_THICKFRAME
+					//| WS_MINIMIZEBOX
+					);
+				SetWindowLongPtr(hWnd, GWL_STYLE, style);
+
+				LONG_PTR exstyle = (NULL
+					| WS_EX_NOACTIVATE
+					| WS_EX_LAYERED
+					//| WS_EX_APPWINDOW
+					| WS_EX_TOPMOST
+					);
+				SetWindowLongPtr(hWnd, GWL_EXSTYLE, exstyle);
+				ShowWindow(hWnd, SW_SHOW);
+				return 0;
+			}
 		}
-		// Store the original window procedure.
-		g_origDirectUIWndProc = reinterpret_cast<WNDPROC>(
-			GetWindowLongPtr(g_hDirectUIWnd, GWLP_WNDPROC)
-			);
-		// Subclass DirectUIHWND
-		SetWindowLongPtr(
-			g_hDirectUIWnd,
-			GWLP_WNDPROC,
-			(LONG_PTR)DirectUIWndProc
-		);
 		break;
 	}
 	case WM_DESTROY:
 	{
-		DestroyIcon(g_hOSKIcon);
 		break;
 	}
 
@@ -339,7 +456,7 @@ LRESULT CALLBACK CBTProc(
 	{
 		HWND hWnd = (HWND)wParam;
 		TCHAR szClassName[MAX_PATH]{};
-		// Retrieve the window class name.
+		// Retrieve the window class name
 		if (!GetClassName(hWnd, szClassName, sizeof(szClassName) / sizeof(TCHAR))) {
 			break;
 		}
@@ -347,8 +464,15 @@ LRESULT CALLBACK CBTProc(
 		if (wcscmp(szClassName, L"DirectUIHWND") == 0) {
 			// Store handle as global
 			g_hDirectUIWnd = hWnd;
+
 			// Notify that proc can be subclassed now
-			PostMessage(g_hOSKMainWnd, ID_DIRECTUI_HWND_CREATED, 0, 0); 
+			PostMessage(
+				g_hOSKMainWnd,
+				WM_COMMAND,
+				MAKEWPARAM(IDM_APP_DIRECTUI_CREATED, CONTROL),
+				(LPARAM)hWnd
+			);
+
 
 			// Open the named event created by the first app
 			HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE, L"OSKLoadEvent");
@@ -365,56 +489,48 @@ LRESULT CALLBACK CBTProc(
 	{
 		HWND hWnd = (HWND)wParam;
 		TCHAR szClassName[MAX_PATH]{};
-		// Retrieve the window class name.
+		// Retrieve the window class name
 		if (!GetClassName(hWnd, szClassName, sizeof(szClassName) / sizeof(TCHAR))) {
 			break;
 		}
 
 		if (wcscmp(szClassName, L"OSKMainClass") == 0) {
-			static bool bProcessed{}; // To process only once.
+			static bool bProcessed{}; // To process only once
 			if (bProcessed) {
 				break;
 			}
 			bProcessed = true;
 
 
-			// Store the original window procedure.
+			// Store the original window procedure
 			g_origOSKMainWndProc = (WNDPROC)GetWindowLongPtr(
 				hWnd,
 				GWLP_WNDPROC
 			);
-
-			// Replace original proc.
+			// Replace original procedure
 			SetWindowLongPtr(
 				hWnd,
 				GWLP_WNDPROC,
-				(LONG_PTR)MainWndProc
+				(LONG_PTR)OSKMainWndProc
 			);
 
-
-			// Edit Style.
+			// Remove `Minimize` box
 			LONG_PTR style = GetWindowLongPtr(hWnd, GWL_STYLE);
 			style &= ~WS_MINIMIZEBOX;
-			style &= ~WS_TABSTOP;        // NOTE: nothing happen
-			style &= ~WS_POPUP;	         // NOTE: nothing happen
 			SetWindowLongPtr(hWnd, GWL_STYLE, style);
 
-			// Edit ExStyle.
+			// Remove from Taskbar
 			LONG_PTR exstyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
 			exstyle &= ~WS_EX_APPWINDOW;
-			exstyle |= WS_EX_NOACTIVATE; // NOTE: nothing happen
-			//exstyle |= WS_EX_TOOLWINDOW;
-			//exstyle |= WS_EX_LAYERED;
-			//exstyle |= WS_EX_TOPMOST;
 			SetWindowLongPtr(hWnd, GWL_EXSTYLE, exstyle);
 
-			// Edit System Menu.
+			// Edit `System Menu`
 			HMENU hSysMenu = GetSystemMenu(hWnd, FALSE);
 			DeleteMenu(hSysMenu, SC_RESTORE, MF_BYCOMMAND);
 			DeleteMenu(hSysMenu, SC_MINIMIZE, MF_BYCOMMAND);
 			DeleteMenu(hSysMenu, SC_MAXIMIZE, MF_BYCOMMAND);
 
-			// Apply style changes.
+			// Apply style changes
 			SetWindowPos(hWnd, nullptr, 0, 0, 0, 0,
 				SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 
@@ -426,22 +542,26 @@ LRESULT CALLBACK CBTProc(
 			g_hOSKMainWnd = hWnd;
 
 			// Show after changes
-			ShowWindowAsync(hWnd, SW_SHOW); // SW_SHOWNA cause flickering
+			ShowWindowAsync(hWnd, SW_SHOW); // `SW_SHOWNA` causes flickering
 
 			// Increment DLL reference count
 			HMODULE hMod;
-			if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)MainWndProc, &hMod)) {
+			if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)OSKMainWndProc, &hMod)) {
 				WCHAR dllPath[MAX_PATH];
 				GetModuleFileName(hMod, dllPath, MAX_PATH);
-				LoadLibrary(dllPath); // Increments ref count
+				LoadLibrary(dllPath);
 			}
-
-			// Load Icon from exe
-			ExtractIconEx(g_oskExecPath, 0, &g_hOSKIcon, NULL, 1);
 		}
 		return 0;
 	}
 
+	//Keeping the hook active and dropping focus here doesn’t work either
+	/*
+	case HCBT_SETFOCUS:
+	{
+		return 1;
+	}
+	*/
 	default:
 		break;
 	}
@@ -450,4 +570,54 @@ LRESULT CALLBACK CBTProc(
 }
 
 
+
+
+
+/*
+	//=========================
+	// Dock
+	//=========================
+
+	0x160A0000  GWL_STYLE
+	----------
+	0x10000000  WS_VISIBLE
+	0x04000000  WS_CLIPSIBLINGS
+	0x02000000  WS_CLIPCHILDREN
+	0x00080000  WS_SYSMENU
+	0x00020000  WS_MINIMIZEBOX
+
+
+	0x080C0188  GWL_EXSTYLE
+	----------
+	0x08000000  WS_EX_NOACTIVATE
+	0x00080000  WS_EX_LAYERED
+	0x00040000  WS_EX_APPWINDOW
+	0x00000100  WS_EX_WINDOWEDGE
+	0x00000080  WS_EX_TOOLWINDOW
+	0x00000008  WS_EX_TOPMOST
+*/
+/*
+	//=========================
+	// Regular
+	//=========================
+
+	0x16CE0000  GWL_STYLE
+	----------
+	0x10000000  WS_VISIBLE
+	0x04000000  WS_CLIPSIBLINGS
+	0x02000000  WS_CLIPCHILDREN
+	0x00800000  WS_BORDER
+	0x00400000  WS_DLGFRAME
+	0x00080000  WS_SYSMENU
+	0x00040000  WS_THICKFRAME
+	0x00020000  WS_MINIMIZEBOX
+
+
+	0x080C0008  GWL_EXSTYLE
+	----------
+	0x08000000  WS_EX_NOACTIVATE
+	0x00080000  WS_EX_LAYERED
+	0x00040000  WS_EX_APPWINDOW
+	0x00000008  WS_EX_TOPMOST
+*/
 
