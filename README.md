@@ -27,7 +27,16 @@ Inspired by the Windows 7 TabTip On-Screen Keyboard, this project is a lightweig
 
 ## Limitations
 
-- **No animations:**
+**To use the Windows 10 OSK Wrapper tool, you first need to fully turn off User Account Control (UAC) on your system.**  
+*Note: Disabling UAC lowers security protections.*
+```Save as .reg and apply
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System]
+"EnableLUA"=dword:00000000
+"ConsentPromptBehaviorAdmin"=dword:00000000
+"PromptOnSecureDesktop"=dword:00000000
+```
 
 ## Installation
 
