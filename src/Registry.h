@@ -1,11 +1,15 @@
 #pragma once
+#include <windows.h>
+#include <tchar.h>
 
 
-bool ReadRegistry(bool, const TCHAR*, const TCHAR*, void*);
 
-bool WriteRegistry(bool, const TCHAR*, const TCHAR*, void*, DWORD);
 
-bool RemoveRegistry(bool, const TCHAR*, const TCHAR*);
+BOOL ReadRegistry(BOOL, LPCTSTR, LPCTSTR, PVOID);
+
+BOOL WriteRegistry(BOOL, LPCTSTR, LPCTSTR, PVOID, DWORD);
+
+BOOL RemoveRegistry(BOOL, LPCTSTR, LPCTSTR);
 
 
 

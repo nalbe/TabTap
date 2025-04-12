@@ -1,12 +1,17 @@
-#pragma once
+// Implementation-specific headers
+//#include "resource.h"
+#include "Registry.h"
+#include "TabTap.h"
+
+// Windows headers
 #include <windows.h>
 #include <tchar.h>
-#include <gdiplus.h>
 #include <shellapi.h>
-#include <Shlwapi.h>  // For PathRemoveFileSpec
-#include <PathCch.h> // For PathCchCombine
-#include "Registry.h"
-#include <Sddl.h> // For security functions
+#include <Shlwapi.h>
+#include <PathCch.h>
+#include <gdiplus.h>
+
+// Library links
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "Msimg32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -15,129 +20,80 @@
 
 // Define GET_X_LPARAM and GET_Y_LPARAM if not available.
 #ifndef GET_X_LPARAM
-#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#define GET_X_LPARAM(lp) ((INT)(WORD)LOWORD(lp))
 #endif
 #ifndef GET_Y_LPARAM
-#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
-#endif
+#define GET_Y_LPARAM(lp) ((INT)(WORD)HIWORD(lp))
+#endif // GET_X_LPARAM
+
+// Define min Windows version (Windows 7)
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif // _WIN32_WINNT
+
+// Define end-of-line marker
+#ifndef EOL_
+#define EOL_ "\r\n"
+#endif // EOL_
 
 
-// Define Messages Source code
-#define MENU            (0)
-#define ACCELERATOR     (1)
-#define CONTROL         (2)
-
-// Define custom command IDs
-#define IDM_APP_SYNC_Y_POSITION      (WM_APP + 1)
-#define IDM_APP_DIRECTUI_CREATED     (WM_APP + 2)
-#define IDM_APP_DOCKMODE             (WM_APP + 3)
-#define IDM_APP_REGULARMODE          (WM_APP + 4)
-
-#define IDM_TRAY_DOCKMODE            (WM_APP + 4)
-#define IDM_TRAY_AUTOSTART           (WM_APP + 3)
-#define IDM_TRAY_EXIT                (WM_APP + 2)
-#define IDM_TRAY_SEPARATOR           (WM_APP + 1)
-
-#define WM_TRAYICON                  (WM_APP + 1)
-#define WM_MOVE_ANIMATION            (WM_APP + 2)
-
-
-HWND g_hWndMain{}; // Handle to the Main application window
-const TCHAR g_mainName[]           = _T("TabTap"); // Application name
-const TCHAR g_mainWndClassName[]   = _T("TabTapMainClass"); // Class name for the main application window
-const TCHAR g_mainRegKey[]         = _T("SOFTWARE\\Empurple\\TabTap"); // Registry subkey for application settings
-const TCHAR g_autoStartRegKey[]    = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run"); // Autorun registry subkey
-
-const SIZE g_mainWndSizeCollapsed{ 7, 95 }; // Size of the Main window in collapsed state
-const SIZE g_mainWndSizeExpanded{ 28, 95 }; // Size of the Main window in expanded state
-
-HWND g_hWndOsk{}; // Handle to the on-screen keyboard window
-const TCHAR g_oskExecPath[]        = _T("%WINDIR%\\System32\\osk.exe"); // Default path to the on-screen keyboard executable
-const TCHAR g_oskRegKey[]          = _T("SOFTWARE\\Microsoft\\Osk"); // Registry subkey for on-screen keyboard settings
-const TCHAR g_oskWndClassName[]    = _T("OSKMainClass"); // Class name for the on-screen keyboard window
-
-ULONG_PTR g_gdiplusToken{};            // Token for GDI+ initialization
-Gdiplus::Image* g_pApplicationImage{}; // Pointer to the application's image resource
-NOTIFYICONDATA g_notifyIconData{};     // Data for the system tray icon
-HMENU g_hTrayContextMenu{};            // Handle to the context menu for the system tray icon
-HMODULE hDll{};
-PROCESS_INFORMATION processInfo{};
-STARTUPINFO startupInfo{};
-
-bool isForAllUsers{}; // Indicates whether registry operations should use HKEY_LOCAL_MACHINE (true) or HKEY_CURRENT_USER (false)
-RECT g_mainWindowRect{}; // Stores the Main window position
-
-
-DWORD ErrorHandler(const TCHAR* message, DWORD errorCode = ERROR_SUCCESS)
+namespace Config
 {
-	TCHAR buffer[256];
-	wsprintf(buffer, _T("%s (%lu)"),message, errorCode);
-	MessageBox(NULL, buffer, _T("Error"), MB_OK | MB_ICONERROR);
-	return errorCode;
+	LPCTSTR MAIN_NAME          = _T("TabTap"); // Application name
+	LPCTSTR MAIN_CLASS_NAME    = _T("TabTapMainClass"); // Class name for the main application window
+	LPCTSTR g_mainRegKey       = _T("SOFTWARE\\Empurple\\TabTap"); // Registry subkey for application settings
+	LPCTSTR g_autoStartRegKey  = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run"); // Autorun registry subkey
+
+	LPCTSTR OSK_CLASS_NAME     = _T("OSKMainClass"); // Class name for the on-screen keyboard window
+	LPCTSTR OSK_APP_PATH       = _T("%WINDIR%\\System32\\osk.exe"); // Default path to the on-screen keyboard executable
+	LPCTSTR g_oskRegKey        = _T("SOFTWARE\\Microsoft\\Osk"); // Registry subkey for on-screen keyboard settings
 }
 
-// Cleans up global resources used by the window. Called during normal shutdown and error exits.
-void Cleanup()
+namespace
 {
-	// Destroy context menu.
-	if (g_hTrayContextMenu) {
-		DestroyMenu(g_hTrayContextMenu);
-		g_hTrayContextMenu = NULL;
-	}
+	HWND g_hOskWnd{};  // Handle to the On-Screen Keyboard window
+	HWND g_hMainWnd{}; // Handle to the Main application window
+	const SIZE g_mainWndSizeCollapsed{ 7, 95 }; // Size of the Main window in collapsed state
+	const SIZE g_mainWndSizeExpanded{ 28, 95 }; // Size of the Main window in expanded state
 
-	// Remove the tray icon from the notification area.
-	Shell_NotifyIcon(NIM_DELETE, &g_notifyIconData); // Returns true/false
-
-	// Free any allocated image resources.
-	if (g_pApplicationImage) {
-		delete g_pApplicationImage;
-		g_pApplicationImage = NULL;
-	}
-
-	// Shutdown GDI+ if it was initialized.
-	if (g_gdiplusToken) {
-		Gdiplus::GdiplusShutdown(g_gdiplusToken);
-		g_gdiplusToken = NULL;
-	}
+	BOOL isForAllUsers{}; // Indicates whether registry operations should use HKEY_LOCAL_MACHINE (true) or HKEY_CURRENT_USER (false)
+	RECT g_mainWindowRect{}; // Stores the Main window position
 }
 
-// Performs additional cleanup and resource release upon error exit.
-void ForcedCleanup()
+// Forward declarations
+LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
+
+
+// Drag control structure
+typedef struct
 {
-	// Clean up common resources.
-	Cleanup();
+	BOOL isDragging;         // Indicates if drag operation is active
+	POINT startPosition;     // Initial cursor position when drag begins
+	POINT currentPosition;   // Current cursor position during drag
+} DragData, * PDragInfo;
 
-	// If a DLL was loaded, free it.
-	if (hDll) {
-		FreeLibrary(hDll);
-		hDll = NULL;
-	}
+// Animation control structure
+typedef struct {
+	BYTE moveStep;
+	POINT targetPoint;
+	BOOL isAnimating;
+} AnimationData, *PAnimInfo;
 
-	// Close the thread handle if it is valid.
-	if (processInfo.hThread) {
-		CloseHandle(processInfo.hThread);
-		processInfo.hThread = NULL;
-	}
-	// Close the process handle if it is valid.
-	if (processInfo.hProcess) {
-		CloseHandle(processInfo.hProcess);
-		processInfo.hProcess = NULL;
-	}
-	// Close OSK if it is open.
-	if (g_hWndOsk = FindWindow(g_oskWndClassName, NULL)) {
-		PostMessage(g_hWndOsk, WM_CLOSE, 0, (LPARAM)TRUE);
-	}
+
+
+
+template <typename ...Args>
+void ShowErrorMessage(LPCTSTR szTitle, LPCTSTR szFmtMessage, Args ...args)
+{
+	TCHAR szBuffer[256];
+	_stprintf_s(szBuffer, szFmtMessage, args...);
+	DWORD dwFlags = MB_OK | MB_ICONERROR;
+
+	MessageBox(NULL, szBuffer, szTitle, dwFlags);
 }
 
-void ForcedExit(const TCHAR* message, DWORD errorCode = ERROR_SUCCESS)
-{
-	ErrorHandler(message, errorCode);
-	ForcedCleanup();
-	exit(errorCode);
-}
-
-
-void DrawImageOnLayeredWindow(HWND hwnd, bool isWindowExpanded)
+// Renders an image onto a layered window
+void DrawImageOnLayeredWindow(HWND hWnd, BOOL isWindowExpanded, Gdiplus::Image* pApplicationImage)
 {
 	SIZE sizeWnd = isWindowExpanded ? g_mainWndSizeExpanded : g_mainWndSizeCollapsed;
 
@@ -153,7 +109,7 @@ void DrawImageOnLayeredWindow(HWND hwnd, bool isWindowExpanded)
 	bmi.bmiHeader.biBitCount = 32;
 	bmi.bmiHeader.biCompression = BI_RGB;
 
-	void* pvBits{};
+	PVOID pvBits{};
 	HBITMAP hBitmap = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pvBits, NULL, 0);
 	if (!hBitmap)  // Check if hBitmap is NULL
 	{
@@ -175,22 +131,22 @@ void DrawImageOnLayeredWindow(HWND hwnd, bool isWindowExpanded)
 	graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
 
 	// Determine cropping parameters:
-	int srcLeft = isWindowExpanded ? 0 : g_pApplicationImage->GetWidth() - g_mainWndSizeCollapsed.cx;
-	int srcWidth = isWindowExpanded ? g_mainWndSizeExpanded.cx : g_mainWndSizeCollapsed.cx;
+	INT srcLeft = isWindowExpanded ? 0 : pApplicationImage->GetWidth() - g_mainWndSizeCollapsed.cx;
+	INT srcWidth = isWindowExpanded ? g_mainWndSizeExpanded.cx : g_mainWndSizeCollapsed.cx;
 
-	graphics.DrawImage(g_pApplicationImage, 0, 0, srcLeft, 0, srcWidth, g_pApplicationImage->GetHeight(), Gdiplus::UnitPixel);
+	graphics.DrawImage(pApplicationImage, 0, 0, srcLeft, 0, srcWidth, pApplicationImage->GetHeight(), Gdiplus::UnitPixel);
 
-	// Prepare the blend function for per-pixel alpha.
+	// Prepare the blend function for per-pixel remaining.
 	BLENDFUNCTION blendFunc = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
 
 	POINT ptSrc{};
 	POINT ptDst;
 	RECT rect;
-	GetWindowRect(hwnd, &rect);
+	GetWindowRect(hWnd, &rect);
 	ptDst.x = rect.left;
 	ptDst.y = rect.top;
 
-	UpdateLayeredWindow(hwnd, hdcScreen, &ptDst, &sizeWnd, hdcMem, &ptSrc, 0, &blendFunc, ULW_ALPHA);
+	UpdateLayeredWindow(hWnd, hdcScreen, &ptDst, &sizeWnd, hdcMem, &ptSrc, 0, &blendFunc, ULW_ALPHA);
 
 	SelectObject(hdcMem, hOldBmp);  // Restore original bitmap
 	DeleteObject(hBitmap);
@@ -198,46 +154,64 @@ void DrawImageOnLayeredWindow(HWND hwnd, bool isWindowExpanded)
 	ReleaseDC(NULL, hdcScreen);
 }
 
-void CreateTrayPopupMenu()
+// Creates and populates a system tray popup menu
+BOOL CreateTrayPopupMenu(HMENU* pMenu)
 {
-	g_hTrayContextMenu = CreatePopupMenu();
+	*pMenu = CreatePopupMenu();
+	if (!*pMenu) { return FALSE; }
+
 	// Check if autostart is enabled in the registry.
-	bool autostartResult = ReadRegistry(isForAllUsers, g_autoStartRegKey, g_mainName, NULL);
+	BOOL isAutostartEnabled = ReadRegistry(
+		isForAllUsers, Config::g_autoStartRegKey, Config::MAIN_NAME, NULL
+	);
 	// Check if `Dock` mode is enabled in the registry.
-	DWORD dwRegVal;
-	ReadRegistry(isForAllUsers, g_oskRegKey, _T("Dock"), &dwRegVal);
-	bool dockModeResult = (dwRegVal == 1);
+	DWORD dwResult;
+	ReadRegistry(
+		isForAllUsers, Config::g_oskRegKey, _T("Dock"), &dwResult
+	);
+	BOOL isDockMode = (dwResult == 1);
 
+	AppendMenu(*pMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
+	AppendMenu(*pMenu, MF_STRING | (isAutostartEnabled ? MF_CHECKED : 0), IDM_TRAY_AUTOSTART, _T("Autostart"));
+	AppendMenu(*pMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
+	AppendMenu(*pMenu, MF_STRING | (isDockMode ? MF_CHECKED : 0), IDM_TRAY_DOCKMODE, _T("Forced Dock mode"));
+	AppendMenu(*pMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
+	AppendMenu(*pMenu, MF_STRING, IDM_TRAY_EXIT, _T("Exit"));
+	AppendMenu(*pMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
 
-	AppendMenu(g_hTrayContextMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
-	AppendMenu(g_hTrayContextMenu, MF_STRING | (autostartResult ? MF_CHECKED : 0), IDM_TRAY_AUTOSTART, _T("Autostart"));
-	AppendMenu(g_hTrayContextMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
-	AppendMenu(g_hTrayContextMenu, MF_STRING | (dockModeResult ? MF_CHECKED : 0), IDM_TRAY_DOCKMODE, _T("Forced Dock mode"));
-	AppendMenu(g_hTrayContextMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
-	AppendMenu(g_hTrayContextMenu, MF_STRING, IDM_TRAY_EXIT, _T("Exit"));
-	AppendMenu(g_hTrayContextMenu, MF_SEPARATOR, IDM_TRAY_SEPARATOR, NULL);
+	return *pMenu != NULL;
 }
 
+// Updates in registry the vertical position of an on-screen keyboard
 void UpdateOSKPosition()
 {
 	DWORD oskWindowHeight;
 	LONG oskNewTop;
-	if (g_hWndMain) {
-		GetWindowRect(g_hWndMain, &g_mainWindowRect);
+	if (g_hMainWnd) {
+		GetWindowRect(g_hMainWnd, &g_mainWindowRect);
 	}
-	ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowHeight"), &oskWindowHeight);
+
+	ReadRegistry(
+		isForAllUsers, Config::g_oskRegKey, _T("WindowHeight"), &oskWindowHeight
+	);
 	oskNewTop = g_mainWindowRect.top - ((LONG)oskWindowHeight - g_mainWndSizeCollapsed.cy) / 2;
+
 	 // Clamp to primary monitor bounds (avoid offscreen positioning)
-	oskNewTop = max(0L, min(GetSystemMetrics(SM_CYSCREEN) - (int)oskWindowHeight, oskNewTop));
-	WriteRegistry(isForAllUsers, g_oskRegKey, _T("WindowTop"), &oskNewTop, REG_DWORD);
+	oskNewTop = max(0L, min(GetSystemMetrics(SM_CYSCREEN) - (INT)oskWindowHeight, oskNewTop));
+	WriteRegistry(
+		isForAllUsers, Config::g_oskRegKey, _T("WindowTop"), &oskNewTop, REG_DWORD
+	);
 }
 
-void AutostartMenuToggle()
+// Toggles the autostart feature by updating the registry
+void ToggleMenuAutostart(HMENU hMenu)
 {
-	UINT menuItemState = GetMenuState(g_hTrayContextMenu, IDM_TRAY_AUTOSTART, MF_BYCOMMAND);
+	UINT menuItemState = GetMenuState(hMenu, IDM_TRAY_AUTOSTART, MF_BYCOMMAND);
 
 	if ((menuItemState & MF_CHECKED) == MF_CHECKED) {
-		RemoveRegistry(isForAllUsers, g_autoStartRegKey, g_mainName);
+		RemoveRegistry(
+			isForAllUsers, Config::g_autoStartRegKey, Config::MAIN_NAME
+		);
 	}
 	else {
 		TCHAR mainExecPath[MAX_PATH + 2]; // Buffer to store the path to the main application executable
@@ -247,157 +221,390 @@ void AutostartMenuToggle()
 		}
 		// Format executable path with quotes for registry compatibility
 		*mainExecPath = *(mainExecPath + result + 1) = _T('"');
-		if (!WriteRegistry(isForAllUsers, g_autoStartRegKey, g_mainName, mainExecPath, REG_SZ)) {
-			return;
-		}
+		BOOL bResult = WriteRegistry(
+			isForAllUsers, Config::g_autoStartRegKey, Config::MAIN_NAME, mainExecPath, REG_SZ
+		);
+		if (!bResult) { return; }
 	}
-	CheckMenuItem(g_hTrayContextMenu, IDM_TRAY_AUTOSTART, MF_BYCOMMAND | ((menuItemState & MF_CHECKED) ? MF_UNCHECKED : MF_CHECKED));
+
+	CheckMenuItem(hMenu, IDM_TRAY_AUTOSTART, MF_BYCOMMAND | ((menuItemState & MF_CHECKED) ? MF_UNCHECKED : MF_CHECKED));
 }
 
-void DockModeToggle()
+// Toggles the dock mode feature by updating the registry
+void ToggleMenuDockMode(HMENU hMenu)
 {
-	UINT menuItemState = GetMenuState(g_hTrayContextMenu, IDM_TRAY_DOCKMODE, MF_BYCOMMAND);
+	UINT menuItemState = GetMenuState(hMenu, IDM_TRAY_DOCKMODE, MF_BYCOMMAND);
 
 	if ((menuItemState & MF_CHECKED) == MF_CHECKED) {
 		DWORD newRegVal = 0;
-		if (!WriteRegistry(isForAllUsers, g_oskRegKey, _T("Dock"), &newRegVal, REG_DWORD)) {
-			return;
-		}
+		BOOL bResult = WriteRegistry(
+			isForAllUsers, Config::g_oskRegKey, _T("Dock"), &newRegVal, REG_DWORD
+		);
+		if (!bResult) { return; }
+
 		PostMessage(
-			g_hWndOsk,
-			WM_COMMAND,
-			MAKEWPARAM(IDM_APP_REGULARMODE, CONTROL),
-			(LPARAM)g_hWndMain
+			g_hOskWnd,
+			WM_APP_CUSTOM_MESSAGE,
+			MAKEWPARAM(ID_APP_REGULARMODE, 0),
+			(LPARAM)g_hMainWnd
 		);
 	}
 	else {
 		DWORD newRegVal = 1;
-		if (!WriteRegistry(isForAllUsers, g_oskRegKey, _T("Dock"), &newRegVal, REG_DWORD)) {
-			return;
-		}
+		BOOL bResult = WriteRegistry(
+			isForAllUsers, Config::g_oskRegKey, _T("Dock"), &newRegVal, REG_DWORD
+		);
+		if (!bResult) { return; }
+
 		PostMessage(
-			g_hWndOsk,
-			WM_COMMAND,
-			MAKEWPARAM(IDM_APP_DOCKMODE, CONTROL),
-			(LPARAM)g_hWndMain
+			g_hOskWnd,
+			WM_APP_CUSTOM_MESSAGE,
+			MAKEWPARAM(ID_APP_DOCKMODE, 0),
+			(LPARAM)g_hMainWnd
 		);
 	}
-	CheckMenuItem(g_hTrayContextMenu, IDM_TRAY_DOCKMODE, MF_BYCOMMAND | ((menuItemState & MF_CHECKED) ? MF_UNCHECKED : MF_CHECKED));
+
+	CheckMenuItem(hMenu, IDM_TRAY_DOCKMODE, MF_BYCOMMAND | ((menuItemState & MF_CHECKED) ? MF_UNCHECKED : MF_CHECKED));
 }
 
-LRESULT CALLBACK WindowProc(
-	HWND hWnd,
-	UINT uMsg,
-	WPARAM wParam,
-	LPARAM lParam)
+// Load the icon
+BOOL InitializeIcon(HICON* pIcon)
 {
-	static bool isMouseTracking{};
-	static bool isDragging{};
-	static bool isMoving{};
-	static bool isWindowExpanded{}; // Tracks whether the window is expanded or collapsed
-	static POINT dragStartPoint{};
-	static POINT moveTargePoint{};
+	TCHAR szBuffer[MAX_PATH];
+	// Expand path to on-screen keyboard
+	if (!ExpandEnvironmentStrings(Config::OSK_APP_PATH, szBuffer, MAX_PATH)) {
+		return FALSE;
+	}
+
+	*pIcon = ExtractIcon(NULL, szBuffer, 0); // First icon in the EXE
+	return (BOOL)*pIcon;
+}
+
+// Setup System Tray Icon
+BOOL SetupTrayIcon(NOTIFYICONDATA* pNotifyIconData, HWND hWnd, HICON hIcon)
+{
+	_tcscpy_s(pNotifyIconData->szTip, Config::MAIN_NAME);  // Sets the tooltip text (paired with NIF_TIP)
+	pNotifyIconData->cbSize = sizeof(NOTIFYICONDATA);      // Specifies the size of the structure, required by Shell_NotifyIcon
+	pNotifyIconData->hWnd = hWnd;                          // Associates the tray icon with a window to receive callback messages
+	pNotifyIconData->uID = IDI_NOTIFY_ICON;                // A unique identifier for the tray icon
+	pNotifyIconData->uCallbackMessage = WM_APP_TRAYICON;   // Defines the custom message
+	pNotifyIconData->hIcon = hIcon;                        // Specifies the icon to display in the tray (paired with NIF_ICON)
+	pNotifyIconData->uFlags =
+		NIF_ICON |      // The tray icon
+		NIF_MESSAGE |   // Event handling
+		NIF_TIP |       // Tooltip text
+		NIF_SHOWTIP;    // Ensures the tooltip appears when hovering (Windows 10/11 enhancement)
+
+	// Required for Windows 10/11
+	pNotifyIconData->dwState = NIS_SHAREDICON;             // Indicates the icon is shared and shouldn’t be deleted when the notification is removed
+	pNotifyIconData->dwStateMask = NIS_SHAREDICON;         // Specifies which state bits to modify
+
+	// First add the icon to the tray
+	if (!Shell_NotifyIcon(NIM_ADD, pNotifyIconData)) {     // Adds the tray icon to the system tray
+		return FALSE;
+	}
+	// Set version AFTER adding
+	pNotifyIconData->uVersion = NOTIFYICON_VERSION;        // Sets the tray icon version to enable modern features (e.g., balloon tips, improved behavior on Windows 10/11)
+
+	return Shell_NotifyIcon(NIM_SETVERSION, pNotifyIconData);
+}
+
+// Load Image Resource
+Gdiplus::Image* LoadImageResource()
+{
+	TCHAR szBuffer[MAX_PATH];
+	// Get current working directory
+	if (!GetCurrentDirectory(MAX_PATH, szBuffer)) { return NULL; }
+	// Combine path with "TabTap.png" inplace
+	HRESULT hResult = PathCchCombine(szBuffer, MAX_PATH, szBuffer, _T("TabTap.png"));
+	if (!SUCCEEDED(hResult)) { return NULL; }
+
+	Gdiplus::Image* pApplicationImage = new Gdiplus::Image(szBuffer);
+	if (pApplicationImage->GetLastStatus() != Gdiplus::Ok) {
+		delete pApplicationImage;
+		return NULL;
+	}
+
+	if (pApplicationImage->GetWidth() < (UINT)g_mainWndSizeExpanded.cx ||
+		pApplicationImage->GetHeight() < (UINT)g_mainWndSizeExpanded.cy) {
+		delete pApplicationImage;
+		return NULL;
+	}
+	return pApplicationImage;
+}
+
+// Create Layered Window
+HWND CreateLayeredWindow(HINSTANCE hInstance)
+{
+	DWORD position{};
+	DWORD oskWindowHeight{};
+	INT screenHeight = GetSystemMetrics(SM_CYSCREEN);
+	BOOL bResult{};
+
+	// Retrieve and adjusts the main window vertical position based on registry-stored values
+	bResult = ReadRegistry(
+		isForAllUsers, Config::g_oskRegKey, _T("WindowTop"), &position
+	);
+	position = bResult ? min((LONG)position, screenHeight - g_mainWndSizeCollapsed.cy) : 0;
+
+	bResult = ReadRegistry(
+		isForAllUsers, Config::g_oskRegKey, _T("WindowHeight"), &oskWindowHeight
+	);
+	// Ensure it remains on-screen and match on-screen keyboard's vertical center
+	position += (oskWindowHeight - g_mainWndSizeCollapsed.cy) / 2;
+
+	return CreateWindowEx(
+		WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+		Config::MAIN_CLASS_NAME,
+		Config::MAIN_NAME,
+		WS_POPUP,
+		0, position, g_mainWndSizeCollapsed.cx, g_mainWndSizeCollapsed.cy,
+		(HWND)NULL, (HMENU)NULL, hInstance, (LPVOID)NULL
+	);
+}
+
+// Register Window Class
+ATOM RegisterWindowClass(HINSTANCE hInstance, WNDCLASSEX* wcex)
+{
+	wcex->cbSize = sizeof(WNDCLASSEX);
+	wcex->lpfnWndProc = WindowProc;                  // Window procedure
+	wcex->hInstance = hInstance;                     // App instance
+	wcex->lpszClassName = Config::MAIN_CLASS_NAME;   // Class name
+	wcex->hCursor = LoadCursor(NULL, IDC_ARROW);     // Cursor
+	wcex->hbrBackground = (HBRUSH)GetStockObject(NULL_BRUSH);            // Background
+	//wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_MAIN_ICON));  // Icon
+	wcex->style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+
+	return RegisterClassEx(wcex);
+}
+
+// Initialize GDI+
+BOOL InitializeGDIPlus(PULONG_PTR pGdiplusToken)
+{
+	Gdiplus::GdiplusStartupInput gdiInput;
+	Gdiplus::Status gdiStatus = GdiplusStartup(pGdiplusToken, &gdiInput, NULL);
+
+	return gdiStatus == Gdiplus::Ok;
+}
+
+// Creates a process to launch the On-Screen Keyboard (OSK) application
+BOOL CreateOSKProcess(STARTUPINFO* pStartupInfo, PROCESS_INFORMATION* pProcessInfo)
+{
+	TCHAR szBuffer[MAX_PATH];
+	pStartupInfo->cb = sizeof(STARTUPINFO);
+	pStartupInfo->dwFlags = STARTF_USESHOWWINDOW;
+	pStartupInfo->wShowWindow = SW_HIDE;
+
+	// Expand path to on-screen keyboard
+	if (!ExpandEnvironmentStrings(Config::OSK_APP_PATH, szBuffer, MAX_PATH)) {
+		return FALSE;
+	}
+
+	// Create OSK Process
+	return CreateProcess(
+		szBuffer,
+		NULL, NULL, NULL,
+		FALSE,
+		NULL, NULL, NULL,
+		pStartupInfo, pProcessInfo);
+}
+
+// Loads a dynamic-link library
+BOOL LoadHookDll(HMODULE* hDll)
+{
+	TCHAR szBuffer[MAX_PATH];
+	if (!GetCurrentDirectory(MAX_PATH, szBuffer)) { return FALSE; }
+
+	HRESULT hResult = PathCchCombine(szBuffer, MAX_PATH, szBuffer, _T("CBTHook.dll"));
+	if (!SUCCEEDED(hResult)) { return FALSE; }
+
+	*hDll = LoadLibrary(szBuffer);
+	if (!*hDll) { return FALSE; }
+
+	return TRUE;
+}
+
+
+LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg,
+	WPARAM wParam, LPARAM lParam)
+{
+	static BOOL isMouseTracking{};
+	static BOOL isWindowExpanded{};              // Tracks whether the window is expanded or collapsed
+	static ULONG_PTR gdiplusToken{};             // Token for GDI+ initialization
+	static Gdiplus::Image* pApplicationImage{};  // Pointer to the application's image resource
+	static NOTIFYICONDATA notifyIconData{};      // Data for the system tray icon
+	static HICON hIcon;                          // Handle to the system tray icon
+	static HMENU hTrayContextMenu{};             // Handle to the context menu for the system tray icon
+	static DragData dragData{};
+	static AnimationData animData{ 1 };
 
 
 	switch (uMsg)
 	{
+
 	case WM_TIMER:
 	{
-		SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+		if (wParam == IDT_KEEP_ON_TOP) {
+			SetWindowPos(
+				hWnd,
+				HWND_TOPMOST,
+				0, 0, 0, 0,
+				SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOMOVE
+			);
+			return 0;
+		}
 		break;
 	}
+
 	case WM_SETCURSOR:
 	{
 		SetCursor(LoadCursor(NULL, IDC_ARROW));
 		break;
 	}
-	case WM_RBUTTONDOWN:
-	{
-		SetCapture(hWnd);
-		isDragging = true;
-		dragStartPoint = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-		ClientToScreen(hWnd, &dragStartPoint);
-		GetWindowRect(hWnd, &g_mainWindowRect);
-		break;
-	}
+
 	case WM_MOUSEACTIVATE:
 	{
 		return MA_NOACTIVATE; // Prevent window activation on mouse click
 	}
+
 	case WM_MOUSEMOVE:
 	{
-		if (isDragging)
-		{
-			POINT cursorPosition = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-			ClientToScreen(hWnd, &cursorPosition);
-			int newWindowTop = g_mainWindowRect.top + cursorPosition.y - dragStartPoint.y;
-			int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+		if (dragData.isDragging) {
+			GetCursorPos(&dragData.currentPosition); // Get cursor screen coordinates
+			INT newWindowTop = g_mainWindowRect.top + (dragData.currentPosition.y - dragData.startPosition.y);
+			INT screenHeight = GetSystemMetrics(SM_CYSCREEN);
 			newWindowTop = max(0, min(newWindowTop, screenHeight - g_mainWndSizeExpanded.cy));
-			int currentWidth = isWindowExpanded ? g_mainWndSizeExpanded.cx : g_mainWndSizeCollapsed.cx;
-			SetWindowPos(hWnd, NULL, 0, newWindowTop, currentWidth, g_mainWndSizeExpanded.cy, SWP_NOZORDER | SWP_NOACTIVATE);
-			DrawImageOnLayeredWindow(hWnd, isWindowExpanded);
+			INT currentWidth = isWindowExpanded ? g_mainWndSizeExpanded.cx : g_mainWndSizeCollapsed.cx;
+			SetWindowPos(
+				hWnd, NULL,
+				0, newWindowTop,
+				currentWidth, g_mainWndSizeExpanded.cy,
+				SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+			);
+			DrawImageOnLayeredWindow(hWnd, isWindowExpanded, pApplicationImage);
 		}
-		else if (!isWindowExpanded)
-		{
+		else if (!isWindowExpanded) {
 			GetWindowRect(hWnd, &g_mainWindowRect);
-			SetWindowPos(hWnd, NULL, 0, g_mainWindowRect.top, g_mainWndSizeExpanded.cx, g_mainWndSizeCollapsed.cy, SWP_NOMOVE | SWP_NOZORDER);
+			SetWindowPos(
+				hWnd, NULL,
+				0, g_mainWindowRect.top,
+				g_mainWndSizeExpanded.cx, g_mainWndSizeCollapsed.cy,
+				SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
+			);
 			isWindowExpanded = true;
-			DrawImageOnLayeredWindow(hWnd, isWindowExpanded);
+			DrawImageOnLayeredWindow(hWnd, isWindowExpanded, pApplicationImage);
 		}
-		if (!isMouseTracking)
-		{
+
+		if (!isMouseTracking) {
 			TRACKMOUSEEVENT trackMouseEvent = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, 0 };
 			TrackMouseEvent(&trackMouseEvent);
 			isMouseTracking = true;
 		}
 		break;
 	}
+
+	case WM_RBUTTONDOWN:
+	{
+		SetCapture(hWnd);
+		dragData.isDragging = true;
+		GetCursorPos(&dragData.startPosition);
+		GetWindowRect(hWnd, &g_mainWindowRect);
+		break;
+	}
+
 	case WM_RBUTTONUP:
 	{
-		isDragging = false;
+		dragData.isDragging = false;
 		ReleaseCapture();
 		break;
 	}
+
+	case WM_RBUTTONDBLCLK:
+	{
+		if (IsWindowVisible(g_hOskWnd)) {
+			// Collapse the main window when the cursor moves away
+			RECT oskWindowRect;
+			POINT cursorPosition;
+			GetWindowRect(g_hOskWnd, &oskWindowRect);
+			GetCursorPos(&cursorPosition);
+			LONG targetPosition = oskWindowRect.top + 
+				(oskWindowRect.bottom - oskWindowRect.top - g_mainWndSizeCollapsed.cy) / 2;
+
+			if (cursorPosition.y < targetPosition
+				or cursorPosition.y > targetPosition + g_mainWndSizeCollapsed.cy)
+			{
+				SendMessage(hWnd, WM_MOUSELEAVE, 0, 0);
+			}
+
+			// Start the animation loop
+			PostMessage(
+				hWnd,
+				WM_APP_CUSTOM_MESSAGE,
+				MAKEWPARAM(ID_APP_SYNC_Y_POSITION, 0),
+				(LPARAM)hWnd
+			);
+		}
+		break;
+	}
+
 	case WM_MBUTTONDOWN:
 	{
 		break;
 	}
+
 	case WM_MBUTTONUP:
 	{
 		SendMessage(hWnd, WM_LBUTTONUP, wParam, lParam);
 		break;
 	}
+
 	case WM_LBUTTONDOWN:
 	{
+		if (wParam & MK_RBUTTON) {
+			PostMessage(
+				g_hOskWnd,
+				WM_APP_CUSTOM_MESSAGE,
+				MAKEWPARAM(ID_APP_FADE, 0),
+				(LPARAM)hWnd
+			);
+		}
 		break;
 	}
+
 	case WM_LBUTTONUP:
 	{
-		if (IsIconic(g_hWndOsk)) {
+		if (IsIconic(g_hOskWnd)) {
 			UpdateOSKPosition();
-			ShowWindowAsync(g_hWndOsk, SW_RESTORE); // Restore OSK
+			ShowWindowAsync(g_hOskWnd, SW_RESTORE); // Restore OSK
 		}
-		else if (IsWindowVisible(g_hWndOsk)) {
-			ShowWindowAsync(g_hWndOsk, SW_HIDE); // Hide OSK
+		else if (IsWindowVisible(g_hOskWnd)) {
+			SendMessage(g_hOskWnd, WM_CLOSE, 0, 0);
+			//ShowWindowAsync(g_hWndOsk, SW_HIDE); // Hide OSK
 		}
 		else {
 			UpdateOSKPosition();
-			ShowWindowAsync(g_hWndOsk, SW_SHOWNA); // Show OSK
+			ShowWindowAsync(g_hOskWnd, SW_SHOWNA); // Show OSK
 		}
 		break;
 	}
+
 	case WM_MOUSELEAVE:
 	{
 		isMouseTracking = false;
-		if (!isDragging && isWindowExpanded) {
+		if (!dragData.isDragging && isWindowExpanded) {
 			GetWindowRect(hWnd, &g_mainWindowRect);
-			SetWindowPos(hWnd, HWND_TOPMOST, 0, g_mainWindowRect.top, g_mainWndSizeCollapsed.cx, g_mainWndSizeCollapsed.cy, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+			SetWindowPos(hWnd, HWND_TOPMOST,
+				0, g_mainWindowRect.top,
+				g_mainWndSizeCollapsed.cx, g_mainWndSizeCollapsed.cy,
+				SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+			);
 			isWindowExpanded = false;
-			DrawImageOnLayeredWindow(hWnd, isWindowExpanded);
+			DrawImageOnLayeredWindow(hWnd, isWindowExpanded, pApplicationImage);
 		}
 		break;
 	}
-	case WM_TRAYICON:
+
+	case WM_APP_TRAYICON:
 	{
 		if (lParam == WM_LBUTTONUP) {
 			SendMessage(hWnd, WM_LBUTTONUP, 0, 0);
@@ -406,257 +613,193 @@ LRESULT CALLBACK WindowProc(
 			POINT cursorPosition;
 			GetCursorPos(&cursorPosition);
 			SetForegroundWindow(hWnd);
-			TrackPopupMenu(g_hTrayContextMenu, TPM_LEFTBUTTON, cursorPosition.x, cursorPosition.y, 0, hWnd, NULL);
+			TrackPopupMenu(hTrayContextMenu, TPM_LEFTBUTTON, cursorPosition.x, cursorPosition.y, 0, hWnd, NULL);
 		}
 		break;
 	}
+
 	case WM_COMMAND:
 	{
-		if (HIWORD(wParam) == MENU) {
-			if (LOWORD(wParam) == IDM_TRAY_DOCKMODE) {
-				DockModeToggle();
+		WORD wNotificationCode = HIWORD(wParam);
+		WORD wCommandId = LOWORD(wParam);
+
+		if (wNotificationCode == 0) {  // Menu/accelerator
+			if (wCommandId == IDM_TRAY_DOCKMODE) {
+				ToggleMenuDockMode(hTrayContextMenu);
 			}
-			else if (LOWORD(wParam) == IDM_TRAY_AUTOSTART) {
-				AutostartMenuToggle();
+			else if (wCommandId == IDM_TRAY_AUTOSTART) {
+				ToggleMenuAutostart(hTrayContextMenu);
 			}
-			else if (LOWORD(wParam) == IDM_TRAY_EXIT) {
+			else if (wCommandId == IDM_TRAY_EXIT) {
 				SendMessage(hWnd, WM_CLOSE, 0, 0);
 			}
 		}
-		else if (HIWORD(wParam) == CONTROL) {
-			if (LOWORD(wParam) == IDM_APP_SYNC_Y_POSITION) {
-				RECT rect;
-				GetWindowRect(g_hWndOsk, &rect);
-				GetWindowRect(hWnd, &g_mainWindowRect);
-				moveTargePoint.y = rect.top + (rect.bottom - rect.top - g_mainWndSizeCollapsed.cy) / 2;
-				if (!isMoving) {
-					PostMessage(hWnd, WM_MOVE_ANIMATION, 0, 0);
-					isMoving = true;
-				}
-			}
-		}
+
+		else if (wNotificationCode == 1) {}  // Accelerator (rarely used explicitly)
+
+		else {}  // Control notification
+
 		break;
 	}
+
+	case WM_APP_CUSTOM_MESSAGE:
+	{
+		WORD wCommandId = LOWORD(wParam);
+
+		if (wCommandId == ID_APP_SYNC_Y_POSITION) {
+			RECT rect;
+			GetWindowRect(g_hOskWnd, &rect);
+			GetWindowRect(hWnd, &g_mainWindowRect);
+			animData.targetPoint.y = rect.top + (rect.bottom - rect.top - g_mainWndSizeCollapsed.cy) / 2;
+			if (!animData.isAnimating) {
+				PostMessage(hWnd, WM_APP_CUSTOM_MESSAGE, MAKEWPARAM(ID_APP_ANIMATION, 0), 0);
+				animData.isAnimating = true;
+			}
+			return 0;
+		}
+
+		if (wCommandId == ID_APP_ANIMATION) {
+			LONG remaining = animData.targetPoint.y - g_mainWindowRect.top;
+
+			if (!remaining) {
+				animData.isAnimating = false;
+				return 1;
+			}
+			LONG delta = min(abs(remaining), animData.moveStep) * (remaining < 0 ? -1 : 1); // Keep sign
+			SetWindowPos(hWnd, NULL,
+				g_mainWindowRect.left,
+				g_mainWindowRect.top += delta,
+				0, 0,
+				SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE
+			);
+			PostMessage(hWnd, WM_APP_CUSTOM_MESSAGE, MAKEWPARAM(ID_APP_ANIMATION, 0), 0);
+			return 0;
+		}
+
+		return 1;
+	}
+
 	case WM_CREATE:
 	{
-		CreateTrayPopupMenu();
-		SetTimer(hWnd, 1, 5000, NULL); // 5 sec interval
-		break;
+		// Init GDI+
+		if (!InitializeGDIPlus(&gdiplusToken)) {
+			ShowErrorMessage(_T("GDI+ Error"), _T("Failed to initialize GDI." EOL_ "%ul"),
+				GetLastError()
+			);
+			return -1;
+		}
+
+		// Load app image
+		pApplicationImage = LoadImageResource();
+		if (!pApplicationImage) {
+			ShowErrorMessage(_T("GDI+ Error"), _T("Failed to load PNG image." EOL_ "%ul"),
+				GetLastError()
+			);
+			return -1;
+		}
+
+		if (!InitializeIcon(&hIcon)) {
+			ShowErrorMessage(_T("Tray Icon Error"), _T("Failed to initialize icon." EOL_ "%ul"),
+				GetLastError()
+			);
+			return -1;
+		}
+
+		// Set up tray icon
+		if (!SetupTrayIcon(&notifyIconData, hWnd, hIcon)) {
+			ShowErrorMessage(_T("Tray Icon Error"), _T("Failed to setup tray icon." EOL_ "%ul"),
+				GetLastError()
+			);
+			return -1;
+		}
+
+		// Create tray popup menu
+		if (!CreateTrayPopupMenu(&hTrayContextMenu)) {
+			ShowErrorMessage(_T("Tray Icon Error"), _T("Failed to setup tray icon." EOL_ "%ul"),
+				GetLastError()
+			);
+			return -1;
+		}
+
+		// Keep window always on top
+		SetTimer(hWnd, IDT_KEEP_ON_TOP, 5000, NULL); // 5 sec interval
+
+		// Explicitly show the window
+		ShowWindow(hWnd, SW_SHOW);
+		DrawImageOnLayeredWindow(hWnd, FALSE, pApplicationImage);
+		return 0;
 	}
+
 	case WM_DESTROY:
 	{
-		PostMessage(g_hWndOsk, WM_CLOSE, 0, (LPARAM)TRUE);
-		GetWindowRect(g_hWndMain, &g_mainWindowRect);
+		// Close osk
+		PostMessage(g_hOskWnd, WM_CLOSE, 0, (LPARAM)TRUE);
+		// needed for save proper osk coordinates on exit
+		GetWindowRect(hWnd, &g_mainWindowRect);
+		//
+		KillTimer(hWnd, IDT_KEEP_ON_TOP);
+
+		// Destroy context menu.
+		if (hTrayContextMenu) {
+			DestroyMenu(hTrayContextMenu);
+		}
+
+		// Remove system tray icon
+		Shell_NotifyIcon(NIM_DELETE, &notifyIconData);
+
+		// Release tray icon resources
+		if (hIcon) {
+			DestroyIcon(hIcon);
+		}
+
+		// Free any allocated image resources.
+		if (pApplicationImage) {
+			delete pApplicationImage;
+		}
+
+		// Shutdown GDI+
+		if (gdiplusToken) {
+			Gdiplus::GdiplusShutdown(gdiplusToken);
+		}
 
 		PostQuitMessage(0);
 		return 0;
 	}
-	case WM_MOVE_ANIMATION:
-	{
-		if (g_mainWindowRect.top == moveTargePoint.y) {
-			isMoving = false;
-			break;
-		}
-		SetWindowPos(hWnd, NULL,
-			g_mainWindowRect.left,
-			g_mainWindowRect.top < moveTargePoint.y ? ++g_mainWindowRect.top : --g_mainWindowRect.top,
-			0, 0,
-			SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE
-		);
-		PostMessage(hWnd, WM_MOVE_ANIMATION, 0, 0);
-		break;
-	}
+
 
 	}
 	return DefWindowProc(hWnd, uMsg, wParam, lParam);
 }
 
 
-// Setup System Tray Icon
-BOOL SetupTrayIcon(HWND hWnd, const TCHAR* iconPath)
-{
-	ZeroMemory(&g_notifyIconData, sizeof(g_notifyIconData));
-	g_notifyIconData.cbSize = sizeof(NOTIFYICONDATA);
-	g_notifyIconData.hWnd = hWnd;
-	g_notifyIconData.uID = 1;  // Unique ID for tray icon
-	g_notifyIconData.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-	g_notifyIconData.uCallbackMessage = WM_TRAYICON;  // Custom message for mouse events
-	g_notifyIconData.hIcon = ExtractIcon(NULL, iconPath, 0); // First icon in the EXE
-	lstrcpy(g_notifyIconData.szTip, g_mainName);
-
-	return Shell_NotifyIcon(NIM_ADD, &g_notifyIconData);
-}
-
-// Load Image Resource
-BOOL LoadImageResource(const TCHAR* imagePath)
-{
-	g_pApplicationImage = new Gdiplus::Image(imagePath);
-	if (g_pApplicationImage->GetLastStatus() != Gdiplus::Ok)
-	{
-		delete g_pApplicationImage;
-		g_pApplicationImage = NULL;
-		return FALSE;
-	}
-
-	if (g_pApplicationImage->GetWidth() < (UINT)g_mainWndSizeExpanded.cx ||
-		g_pApplicationImage->GetHeight() < (UINT)g_mainWndSizeExpanded.cy) {
-		return FALSE;
-	}
-	return TRUE;
-}
-
-// Create Layered Window
-HWND CreateLayeredWindow(HINSTANCE hInstance)
-{
-	DWORD position{};
-	DWORD oskWindowHeight{};
-	int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-	// Retrieve and adjusts the main window vertical position based on registry-stored values
-	bool result = ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowTop"), &position);
-	position = result ? min((LONG)position, screenHeight - g_mainWndSizeCollapsed.cy) : 0;
-	result = ReadRegistry(isForAllUsers, g_oskRegKey, _T("WindowHeight"), &oskWindowHeight);
-	// Ensure it remains on-screen and match on-screen keyboard's vertical center
-	position += (oskWindowHeight - g_mainWndSizeCollapsed.cy) / 2;
-
-	return CreateWindowEx(
-		WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-		g_mainWndClassName,
-		g_mainName,
-		WS_POPUP,
-		0, position, g_mainWndSizeCollapsed.cx, g_mainWndSizeCollapsed.cy,
-		(HWND)NULL, (HMENU)NULL, hInstance, (LPVOID)NULL
-	);
-}
-
-// Register Window Class
-ATOM RegisterWindowClass(HINSTANCE hInstance)
-{
-	WNDCLASS wc{};
-	wc.lpfnWndProc = WindowProc;
-	wc.hInstance = hInstance;
-	wc.lpszClassName = g_mainWndClassName;
-	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-	wc.hbrBackground = (HBRUSH)GetStockObject(NULL_BRUSH);
-	return RegisterClass(&wc);
-}
-
-// Initialize GDI+
-BOOL InitializeGDIPlus()
-{
-	Gdiplus::GdiplusStartupInput gdiInput;
-	Gdiplus::Status gdiStatus = GdiplusStartup(&g_gdiplusToken, &gdiInput, NULL);
-	return gdiStatus == Gdiplus::Ok;
-}
-
-BOOL IsRunningAsAdmin()
-{
-	BOOL isAdmin = FALSE;
-	PSID adminGroupSid = NULL;
-
-	// Initialize SID for the Administrators group
-	SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
-	if (!AllocateAndInitializeSid(&ntAuthority, 2,
-		SECURITY_BUILTIN_DOMAIN_RID,
-		DOMAIN_ALIAS_RID_ADMINS,
-		0, 0, 0, 0, 0, 0,
-		&adminGroupSid))
-	{
-		return FALSE; // Failed to allocate SID
-	}
-
-	// Check if the token is part of the Administrators group
-	if (!CheckTokenMembership(NULL, adminGroupSid, &isAdmin))
-	{
-		isAdmin = FALSE; // Fallback if check fails
-	}
-
-	// Cleanup
-	if (adminGroupSid)
-	{
-		FreeSid(adminGroupSid);
-	}
-
-	return isAdmin;
-}
-
-
 // Main Entry Point
-int WINAPI WinMain(
+INT WINAPI WinMain(
 	_In_ HINSTANCE hInstance,
 	_In_opt_ HINSTANCE hPrevInstance,
 	_In_ LPSTR lpCmdLine,
-	_In_ int nCmdShow)
+	_In_ INT nCmdShow)
 {
-	// Check program is already running.
-	if (g_hWndMain = FindWindow(g_mainWndClassName, NULL)) {
-		PostMessage(g_hWndMain, WM_LBUTTONUP, 0, 0);
+	// Check if program is already running
+	if (g_hMainWnd = FindWindow(Config::MAIN_CLASS_NAME, NULL)) {
+		PostMessage(g_hMainWnd, WM_LBUTTONUP, 0, 0);
 		return ERROR_ALREADY_EXISTS;
 	}
-	// Administrative rights required for CBTHook?	<-- CHECK
-	if (!IsRunningAsAdmin())
-	{
-		ErrorHandler(_T(
-			"This application requires administrative privileges to function properly. Please restart the application as an administrator."
-		));
-	}
 
-	// Close OSK if it is open.
-	if (g_hWndOsk = FindWindow(g_oskWndClassName, NULL)) {
-		SendMessage(g_hWndOsk, WM_CLOSE, 0, (LPARAM)TRUE); // Abuse lParam for custom behavior
-	}
-
-	TCHAR oskExecPathEx[MAX_PATH]; // Buffer to store the full path to the on-screen keyboard
-	if (!ExpandEnvironmentStrings(g_oskExecPath, oskExecPathEx, MAX_PATH)) {
-		ForcedExit(_T("The environment variable expansion failed."), GetLastError());
-	}
-
-	TCHAR workDirBuff[MAX_PATH]; // Buffer to store the path to the current working directory
-	TCHAR fullPathBuff[MAX_PATH]; // Buffer to store the full path
-	GetModuleFileName(NULL, workDirBuff, MAX_PATH); // Get full EXE path
-	PathRemoveFileSpec(workDirBuff); // Remove the filename
-
-	HRESULT hr;
-	hr = PathCchCombine(fullPathBuff, MAX_PATH, workDirBuff, _T("TabTap.png"));
-	if (!SUCCEEDED(hr)) {
-		ForcedExit(_T("Failed to combine full path."), GetLastError());
+	// Close OSK if open
+	if (g_hOskWnd = FindWindow(Config::OSK_CLASS_NAME, NULL)) {
+		SendMessage(g_hOskWnd, WM_CLOSE, 0, (LPARAM)TRUE);  // lParam forces custom close
 	}
 
 
-	// Main Window Create
-	// ==============================
+	HMODULE hDll{};
 
-	if (!InitializeGDIPlus()) {
-		ForcedExit(_T("Failed to initialize GDI."), -1);
-	}
-	if (!RegisterWindowClass(hInstance)) {
-		ForcedExit(_T("Failed to register window class."), GetLastError());
-	}
-	if (!(g_hWndMain = CreateLayeredWindow(hInstance))) {
-		ForcedExit(_T("Failed to create window."), GetLastError());
-	}
-	if (!LoadImageResource(fullPathBuff)) {
-		ForcedExit(_T("Failed to load PNG image."), -1);
-	}
-	if (!SetupTrayIcon(g_hWndMain, oskExecPathEx)) {
-		ForcedExit(_T("Failed to setup tray icon."), GetLastError());
-	}
-	ShowWindow(g_hWndMain, nCmdShow);
-	DrawImageOnLayeredWindow(g_hWndMain, false);
-
-
-	// CBTHook Initializing
-	// ==============================
-
-	hr = PathCchCombine(fullPathBuff, MAX_PATH, workDirBuff, _T("CBTHook.dll"));
-	if (!SUCCEEDED(hr)) {
-		ForcedExit(_T("Failed to combine full path."), GetLastError());
+	if (!LoadHookDll(&hDll)) {
+		ShowErrorMessage(_T("DLL Error"),
+			_T("Failed to load the DLL." EOL_ "%ul"), GetLastError());
+		return -1;
 	}
 
-	if (!(hDll = LoadLibrary(fullPathBuff))) {
-		ForcedExit(_T("The specified module could not be found."), ERROR_MOD_NOT_FOUND);
-	}
-
-	// Function pointer types for the exported functions.
+	// Function pointer types for the exported functions
 	typedef BOOL(*UninstallHookFunc)();
 	typedef BOOL(*InstallHookFunc)(DWORD);
 
@@ -664,116 +807,145 @@ int WINAPI WinMain(
 	InstallHookFunc InstallHook = (InstallHookFunc)GetProcAddress(hDll, "InstallHook");
 
 	if (!UninstallHook or !InstallHook) {
-		ForcedExit(_T("The specified procedure could not be found."), ERROR_PROC_NOT_FOUND);
+		ShowErrorMessage(_T("DLL Error"),
+			_T("The specified procedure could not be found." EOL_ "%ul"), ERROR_PROC_NOT_FOUND);
+		FreeLibrary(hDll);
+		return -1;
+	}
+
+	STARTUPINFO startupInfo{};
+	PROCESS_INFORMATION processInfo{};
+	WNDCLASSEX wcex{};
+	HANDLE hEvent{};
+	DWORD waitResult{};
+
+	// Create OSK Process
+	if (!CreateOSKProcess(&startupInfo, &processInfo)) {
+		ShowErrorMessage(_T("Window Creation Failed"),
+			_T("Unable to create OSK window. Check UAC is disabled." EOL_ "%ul"), GetLastError());
+		goto CLEANUP;
+	}
+	if (!processInfo.hProcess) { goto CLEANUP; } // warnings C6387
+
+	waitResult = WaitForInputIdle(processInfo.hProcess, 3000);
+	if (waitResult == WAIT_TIMEOUT) {
+		ShowErrorMessage(_T("Event Error"),
+			_T("The wait time-out interval elapsed." EOL_ "%ul"), WAIT_TIMEOUT);
+		goto CLEANUP;
+	}
+	if (waitResult == WAIT_FAILED) {
+		ShowErrorMessage(_T("Event Error"),
+			_T("Failed to wait for the Process." EOL_ "%ul"), WAIT_FAILED);
+		goto CLEANUP;
 	}
 
 
-	// OSK Load
+	// Hook Inject
 	// ==============================
 
-	startupInfo.cb = sizeof(startupInfo);
-	startupInfo.dwFlags = STARTF_USESHOWWINDOW;
-	//startupInfo.wShowWindow = SW_SHOWNA;
-	startupInfo.wShowWindow = SW_HIDE;
-
-	if (!CreateProcess(
-		oskExecPathEx,
-		NULL,
-		NULL,
-		NULL,
-		FALSE,
-		0, // flags: CREATE_SUSPENDED
-		NULL,
-		NULL,
-		&startupInfo,
-		&processInfo
-	))
-	{
-		ForcedExit(_T("Failed to create process."), GetLastError());
-	}
-
-	DWORD result;
-	result = WaitForInputIdle(processInfo.hProcess, 3000);
-	if (result == WAIT_TIMEOUT) {
-		ForcedExit(_T("The wait time-out interval elapsed."), WAIT_TIMEOUT);
-	}
-	if (result == WAIT_FAILED) {
-		ForcedExit(_T("Failed to wait for the Process."), WAIT_FAILED);
-	}
-
-
-	// CBTHook Inject
-	// ==============================
-
-	// Create a manual-reset event that starts unsignaled.
-	HANDLE hEvent;
+	// Create a manual-reset event that starts unsignaled
 	if (!(hEvent = CreateEvent(NULL, TRUE, FALSE, _T("OSKLoadEvent")))) {
-		ForcedExit(_T("Failed to Create Event."), GetLastError());
+		ShowErrorMessage(_T("Event Error"),
+			_T("Failed to create event." EOL_ "%ul"), GetLastError());
+		goto CLEANUP;
 	}
 
-	// Inject hook.
+	// Inject hook
 	if (!InstallHook(processInfo.dwThreadId)) {
-		ForcedExit(_T("Failed to Install the Windows Hook procedure."), ERROR_HOOK_NOT_INSTALLED);
+		ShowErrorMessage(_T("Hook Error"),
+			_T("Failed to install the Windows hook procedure." EOL_ "%ul"), ERROR_HOOK_NOT_INSTALLED);
+		goto CLEANUP;
 	}
 
-	// Wait for the event to be signaled.
-	result = WaitForSingleObject(hEvent, 3000);
-	if (result == WAIT_TIMEOUT) {
-		CloseHandle(hEvent);
-		ForcedExit(_T("The wait time-out interval elapsed."), WAIT_TIMEOUT);
+	// Wait for the event to be signaled
+	waitResult = WaitForSingleObject(hEvent, 3000);
+	if (waitResult == WAIT_TIMEOUT) {
+		ShowErrorMessage(_T("Event Error"),
+			_T("The wait time-out interval elapsed." EOL_ "%ul"), WAIT_TIMEOUT);
+		goto CLEANUP;
 	}
-	if (result == WAIT_FAILED) {
-		CloseHandle(hEvent);
-		ForcedExit(_T("Failed to wait for the Process."), WAIT_FAILED);
+	if (waitResult == WAIT_FAILED) {
+		ShowErrorMessage(_T("Event Error"),
+			_T("Failed to wait for the process." EOL_ "%ul"), WAIT_FAILED);
+		goto CLEANUP;
 	}
 
-	// CBTHook DLL confirmed successful injection; safe to close the event.
-	CloseHandle(hEvent);
+	// CBTHook.dll confirmed successful injection; Safe to close the event
+	if (!CloseHandle(hEvent)) {
+		ShowErrorMessage(_T("Event Error"),
+			_T("Failed to close event." EOL_ "%ul"), GetLastError());
+		hEvent = {};
+		goto CLEANUP;
+	}
+	hEvent = {};
 
-	// Unload hook.
+	// Unload hook
 	if (!UninstallHook()) {
-		ForcedExit(_T("Failed to remove the Windows hook."), ERROR_HOOK_NOT_INSTALLED);
+		ShowErrorMessage(_T("Hook Error"),
+			_T("Failed to remove the Windows hook." EOL_ "%ul"), ERROR_HOOK_NOT_INSTALLED);
+		goto CLEANUP;
 	}
-
-	// Unload library.
-	FreeLibrary(hDll);
-
-
-
-	// ==============================
 
 	// Store OSK handle globally
-	if (!(g_hWndOsk = FindWindow(g_oskWndClassName, NULL))) {
-		ForcedExit(_T("Failed to Find Window."), -1);
+	if (!(g_hOskWnd = FindWindow(Config::OSK_CLASS_NAME, NULL))) {
+		ShowErrorMessage(_T("Find Window Error"),
+			_T("Failed to find the window." EOL_ "%ul"), -1);
+		goto CLEANUP;
+	}
+
+	// Unload library
+	FreeLibrary(hDll);
+	hDll = {};
+
+
+	// Register Main class and Create Window
+	// ==============================
+	if (!RegisterWindowClass(hInstance, &wcex)) {
+		ShowErrorMessage(_T("Window Class Registration Failed"),
+			_T("Unable to register window class." EOL_ "%ul"), GetLastError());
+		goto CLEANUP;
+	}
+
+	g_hMainWnd = CreateLayeredWindow(hInstance);
+	if (!g_hMainWnd) {
+		ShowErrorMessage(_T("Window Creation Failed"),
+			_T("Unable to create main window." EOL_ "%ul"), GetLastError());
+		goto CLEANUP;
 	}
 
 	MSG msg;
-	while (GetMessage(&msg, nullptr, 0, 0))
+	while (GetMessage(&msg, NULL, 0, 0))
 	{
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
 	}
 
-	Cleanup();
 
-	result = WaitForSingleObject(processInfo.hProcess, 3000);
-	if (result == WAIT_TIMEOUT) {
-		ForcedExit(_T("The wait time-out interval elapsed."), WAIT_TIMEOUT);
+	// Exit
+	// ==============================
+	waitResult = WaitForSingleObject(processInfo.hProcess, 3000);
+	if (waitResult == WAIT_TIMEOUT) {
+		ShowErrorMessage(_T("Process Wait Error"),
+			_T("The wait time-out interval elapsed." EOL_ "%ul"), WAIT_TIMEOUT);
+		goto CLEANUP;
 	}
-	if (result == WAIT_FAILED) {
-		ForcedExit(_T("Failed to wait for the Process."), WAIT_FAILED);
+	if (waitResult == WAIT_FAILED) {
+		ShowErrorMessage(_T("Process Wait Error"),
+			_T("Failed to wait for the process." EOL_ "%ul"), WAIT_FAILED);
+		goto CLEANUP;
 	}
 
 	UpdateOSKPosition(); // NOTE: Last time coords was updated in WM_DESTROY
 
-	if (processInfo.hProcess) {
-		CloseHandle(processInfo.hProcess);
-		processInfo.hProcess = NULL;
-	}
-	if (processInfo.hThread) {
-		CloseHandle(processInfo.hThread);
-		processInfo.hThread = NULL;
-	}
+
+CLEANUP:
+	WNDCLASSEX existingWc{ sizeof(WNDCLASSEX) };
+	BOOL isRegistered = GetClassInfoEx(wcex.hInstance, Config::MAIN_CLASS_NAME, &existingWc);
+	if (isRegistered) { UnregisterClass(Config::MAIN_CLASS_NAME, GetModuleHandle(NULL)); }
+	if (hEvent) { CloseHandle(hEvent); }
+	if (hDll) { FreeLibrary(hDll); }
+	if (processInfo.hProcess) { CloseHandle(processInfo.hProcess); }
+	if (processInfo.hThread) { CloseHandle(processInfo.hThread); }
 
 	return 0;
 }

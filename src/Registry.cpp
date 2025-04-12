@@ -1,16 +1,14 @@
-#include <windows.h>
-#include <tchar.h>
 #include "Registry.h"
 
 
-bool ReadRegistry(bool forAllUsers, const TCHAR* subKey, const TCHAR* valueName, void* data)
+BOOL ReadRegistry(BOOL forAllUsers, LPCTSTR subKey, LPCTSTR valueName, PVOID data)
 {
 	HKEY hKey{};
 	HKEY hRootKey = forAllUsers ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
 	DWORD dataSize{};
 	DWORD dataType{ REG_NONE };
 
-	// Open the registry key.
+	// Open the registry key
 	LONG result = RegOpenKeyEx(
 		hRootKey,
 		subKey,
@@ -19,16 +17,16 @@ bool ReadRegistry(bool forAllUsers, const TCHAR* subKey, const TCHAR* valueName,
 		&hKey
 	);
 	if (result != ERROR_SUCCESS) {
-		return false; // Key doesn't exist or access denied
+		return FALSE; // Key doesn't exist or access denied
 	}
 
-	// First, query the regData to get the data type and size.
+	// First, query the regData to get the data type and size
 	result = RegQueryValueEx(
 		hKey,
 		valueName,
-		nullptr,
+		NULL,
 		&dataType,
-		nullptr,
+		NULL,
 		&dataSize
 	);
 	if (result != ERROR_SUCCESS) {
@@ -36,24 +34,24 @@ bool ReadRegistry(bool forAllUsers, const TCHAR* subKey, const TCHAR* valueName,
 			// Value doesn't exist - no error message needed
 		}
 		else {
-			MessageBox(nullptr, _T("Error reading registry value."), _T("Error"), MB_OK | MB_ICONERROR);
+			MessageBox(NULL, _T("Error reading registry value."), _T("Error"), MB_OK | MB_ICONERROR);
 		}
 		RegCloseKey(hKey);
-		return false;
+		return FALSE;
 	}
 
-	// Handle REG_DWORD dataType.
+	// Handle REG_DWORD dataType
 	if (dataType == REG_DWORD) {
-		result = RegQueryValueEx(hKey, valueName, nullptr, &dataType, reinterpret_cast<LPBYTE>(data), &dataSize);
+		result = RegQueryValueEx(hKey, valueName, NULL, &dataType, reinterpret_cast<LPBYTE>(data), &dataSize);
 	}
-	// Handle REG_SZ (string) dataType.
+	// Handle REG_SZ (string) dataType
 	else if (dataType == REG_SZ) {
-		result = RegQueryValueEx(hKey, valueName, nullptr, nullptr, reinterpret_cast<LPBYTE>(data), &dataSize);
+		result = RegQueryValueEx(hKey, valueName, NULL, NULL, reinterpret_cast<LPBYTE>(data), &dataSize);
 	}
 	else {
-		MessageBox(nullptr, _T("Unsupported registry dataType."), _T("Type Error"), MB_OK | MB_ICONERROR);
+		MessageBox(NULL, _T("Unsupported registry dataType."), _T("Type Error"), MB_OK | MB_ICONERROR);
 		RegCloseKey(hKey);
-		return false;
+		return FALSE;
 	}
 
 	// Close the registry key
@@ -61,48 +59,48 @@ bool ReadRegistry(bool forAllUsers, const TCHAR* subKey, const TCHAR* valueName,
 	return (result == ERROR_SUCCESS);
 }
 
-bool WriteRegistry(bool forAllUsers, const TCHAR* subKey, const TCHAR* valueName, void* data, DWORD dataType)
+BOOL WriteRegistry(BOOL forAllUsers, LPCTSTR subKey, LPCTSTR valueName, PVOID data, DWORD dataType)
 {
-	HKEY hKey = nullptr;
+	HKEY hKey = NULL;
 	HKEY hRootKey = forAllUsers ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
-	DWORD dataSize{};
+	SIZE_T dataSize{};
 
-	// Create or open the registry key.
+	// Create or open the registry key
 	LONG result = RegCreateKeyEx(
 		hRootKey,
 		subKey,
 		0,
-		nullptr,
+		NULL,
 		REG_OPTION_NON_VOLATILE,
 		KEY_WRITE,
-		nullptr,
+		NULL,
 		&hKey,
-		nullptr
+		NULL
 	);
 	if (result != ERROR_SUCCESS) {
 		MessageBox(NULL, _T("Failed to open or create registry key."), _T("Error"), MB_OK | MB_ICONERROR);
-		return false;
+		return FALSE;
 	}
 	if (dataType == REG_DWORD) {
 		dataSize = sizeof(DWORD);
 	}
 	else if (dataType == REG_SZ) {
-		// Calculate the size of the string including the null terminator.
-		dataSize = (_tcslen(reinterpret_cast<const TCHAR*>(data)) + 1) * sizeof(TCHAR);
+		// Calculate the size of the string including the null terminator
+		dataSize = (_tcslen(reinterpret_cast<LPCTSTR>(data)) + 1) * sizeof(TCHAR);
 	}
 	else {
 		MessageBox(NULL, _T("Unsupported data type."), _T("Error"), MB_OK | MB_ICONERROR);
 		RegCloseKey(hKey);
-		return false;
+		return FALSE;
 	}
 
-	// Write the data to the registry.
+	// Write the data to the registry
 	result = RegSetValueEx(
 		hKey,
 		valueName,
 		0,
 		dataType,
-		reinterpret_cast<const BYTE*>(data),
+		reinterpret_cast<const PBYTE>(data),
 		dataSize
 	);
 
@@ -111,14 +109,14 @@ bool WriteRegistry(bool forAllUsers, const TCHAR* subKey, const TCHAR* valueName
 	return (result == ERROR_SUCCESS);
 }
 
-bool RemoveRegistry(bool forAllUsers, const TCHAR* subKey, const TCHAR* valueName)
+BOOL RemoveRegistry(BOOL forAllUsers, LPCTSTR subKey, LPCTSTR valueName)
 {
 	HKEY hKey;
 	HKEY rootKey = forAllUsers ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
 
 	// Open the registry key
 	if (RegOpenKeyEx(rootKey, subKey, 0, KEY_WRITE, &hKey) != ERROR_SUCCESS) {
-		return false;
+		return FALSE;
 	}
 
 	// Delete the value
