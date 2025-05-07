@@ -1,5 +1,9 @@
 #pragma once
 
+// Define end-of-line marker
+#ifndef EOL_
+#define EOL_ "\r\n"
+#endif // EOL_
 
 
 // Custom window message IDs
@@ -10,7 +14,8 @@
 // Icons, menu items, and control identifiers
 #define IDI_NOTIFY_ICON				(1000 + 1)
 #define IDT_KEEP_ON_TOP             (1000 + 2)
-#define IDT_ANIMATION               (1000 + 3)
+#define IDT_ANIMATION_TIMER         (1000 + 3)
+#define IDT_BLINK_TIMER             (1000 + 4)
 
 
 // Command identifiers for the notification area context menu

@@ -1,115 +1,69 @@
+// Implementation-specific headers
+#include "CustomIncludes/WinApi/MessageBoxNotifier.h"
+#include "CustomIncludes/WinApi/Debouncer.h"
+#include "CustomIncludes/WinApi/WindowDragger.h"
+#include "CustomIncludes/WinApi/MouseTracker.h"
+#include "CustomIncludes/WinApi/DoubleClickHelper.h"
+
+// Windows system headers
 #include <windows.h>
+#include <windowsx.h>  // For GET_X_LPARAM, GET_Y_LPARAM
+#include <tchar.h>
 
-
-// Define GET_X_LPARAM and GET_Y_LPARAM if not available.
-#ifndef GET_X_LPARAM
-#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
-#endif
-#ifndef GET_Y_LPARAM
-#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#ifdef _DEBUG
+#include "CustomIncludes/WinApi/LogManager.h"
 #endif
 
 
-// Define Messages Source code
-#define MENU            (0)
-#define ACCELERATOR     (1)
-#define CONTROL         (2)
 
-// Define custom command IDs
-#define IDM_APP_SYNC_Y_POSITION      (WM_APP + 1)
-#define IDM_APP_DIRECTUI_CREATED     (WM_APP + 2)
-#define IDM_APP_DOCKMODE             (WM_APP + 3)
-#define IDM_APP_REGULARMODE          (WM_APP + 4)
+// Custom window message IDs
+#define WM_APP_CUSTOM_MESSAGE       (WM_APP + 2)
+
+// Custom command IDs (LOWORD)
+#define ID_APP_ANIMATION            (3000 + 1)
+#define ID_APP_SYNC_Y_POSITION      (3000 + 2)
+#define ID_APP_DIRECTUI_READY       (3000 + 3)
+#define ID_APP_DOCKMODE             (3000 + 4)
+#define ID_APP_REGULARMODE          (3000 + 5)
+#define ID_APP_FADE                 (3000 + 6)
 
 
-// Store globals
-HINSTANCE g_hInstance             = NULL; // DLL instance
-HHOOK g_hHook                     = NULL; // CBT hook handle
-HWND g_hTabTapMainWnd             = NULL; // TabTapMainClass handle
-HWND g_hDirectUIWnd               = NULL; // DirectUIHWnd handle
-HWND g_hOSKMainWnd                = NULL; // OSKMainClass handle
-const TCHAR g_oskExecPath[]       = L"%WINDIR%\\System32\\osk.exe"; // Default path to the on-screen keyboard executable
 
-WNDPROC g_origOSKMainWndProc      = NULL; // Original OSKMainClass window procedure
-WNDPROC g_origDirectUIWndProc     = NULL; // Original DirectUIHWND window procedure
-HICON g_hOSKIcon                  = NULL; // Use icon provided in osk.exe
+namespace
+{
+	// Store globals
+	HINSTANCE g_hInstance  = NULL;  // DLL instance
+	HHOOK g_hHook          = NULL;  // CBT hook handle
+	HWND g_hTabTapMainWnd  = NULL;  // TabTapMainClass handle
+	HWND g_hDirectUIWnd    = NULL;  // DirectUIHWnd handle
+	HWND g_hOSKMainWnd     = NULL;  // OSKMainClass handle
+
+	LPCTSTR g_oskExecPath  = _T("%WINDIR%\\System32\\osk.exe");  // Default path to the on-screen keyboard executable
+
+	WNDPROC g_origOSKMainWndProc  = NULL;  // Original OSKMainClass window procedure
+	WNDPROC g_origDirectUIWndProc = NULL;  // Original DirectUIHWND window procedure
+}
+
 
 
 // Forward declarations
-LRESULT CALLBACK CBTProc(int, WPARAM, LPARAM);
+LRESULT CALLBACK CBTProc(INT, WPARAM, LPARAM);
 
-
-//#define USE_LOG
-#ifdef USE_LOG
-#define LOG_PATH      L"C:\\hooklog.txt"
-
-HANDLE hFile = CreateFile(
-	LOG_PATH,
-	FILE_APPEND_DATA,
-	FILE_SHARE_READ | FILE_SHARE_WRITE,
-	NULL,
-	OPEN_ALWAYS,
-	FILE_ATTRIBUTE_NORMAL,
-	NULL
-);
-
-CRITICAL_SECTION g_csLog; // Serialize log access
-
-#define ERROR_CODE_PREFIX      L" Error: "
-#define ERROR_CODE_PREFIX_LEN  (ARRAYSIZE(ERROR_CODE_PREFIX) - 1) // Length without null
-#define NEWLINE                L"\r\n"
-#define NEWLINE_LEN            (ARRAYSIZE(NEWLINE) - 1)
-
-
-BOOL WriteString(LPCWSTR message, DWORD cchMessage = 0)
-{
-	DWORD dwBytesToWrite = (cchMessage ? cchMessage : lstrlen(message)) * sizeof(WCHAR);
-	DWORD dwBytesWritten{};
-	return WriteFile(hFile, message, dwBytesToWrite, &dwBytesWritten, NULL)
-		and (dwBytesWritten == dwBytesToWrite);
-}
-
-BOOL WriteDWORD(DWORD dwValue)
-{
-	WCHAR buffer[20];  // Enough for any int
-	return WriteString(buffer, wsprintf(buffer, L"%d", dwValue));
-}
-
-BOOL LogError(LPCWSTR message, DWORD error = ERROR_SUCCESS)
-{
-	EnterCriticalSection(&g_csLog);
-	BOOL bSuccess{};
-
-	if (!WriteString(message) or
-		!WriteString(ERROR_CODE_PREFIX, ERROR_CODE_PREFIX_LEN) or
-		!WriteDWORD(error) or
-		!WriteString(NEWLINE, NEWLINE_LEN))
-	{
-		bSuccess = FALSE;
-	}
-	else {
-		bSuccess = FlushFileBuffers(hFile);
-	}
-	LeaveCriticalSection(&g_csLog);
-	return bSuccess;
-}
-
-#endif // USE_LOG
 
 
 extern "C" __declspec(dllexport)
 BOOL UninstallHook()
 {
 	if (!g_hHook) {
-#ifdef USE_LOG
-		LogError(L"No hook to remove.");
-#endif // USE_LOG
+#ifdef _DEBUG
+		LogManager::WriteLog(_T("No hook to remove."));
+#endif // _DEBUG
 		return FALSE;
 	}
 	if (!UnhookWindowsHookEx(g_hHook)) {
-#ifdef USE_LOG
-		LogError(L"Failed to remove hook.", GetLastError());
-#endif // USE_LOG
+#ifdef _DEBUG
+		LogManager::WriteLog(_T("Failed to remove hook: %lu"), GetLastError());
+#endif // _DEBUG
 		return FALSE;
 	}
 	g_hHook = NULL;
@@ -128,9 +82,9 @@ BOOL InstallHook(DWORD threadId)
 	);
 
 	if (!g_hHook) {
-#ifdef USE_LOG
-		LogError(L"Failed to set windows hook.");
-#endif // USE_LOG
+#ifdef _DEBUG
+		LogManager::WriteLog(_T("Failed to set windows hook: %lu"), GetLastError());
+#endif // _DEBUG
 		return FALSE;
 	}
 	return TRUE;
@@ -147,10 +101,7 @@ BOOL APIENTRY DllMain(
 	case DLL_PROCESS_ATTACH:
 	{
 		g_hInstance = hInstance;
-		DisableThreadLibraryCalls(hInstance); // Optional: Improve performance
-#ifdef USE_LOG
-		InitializeCriticalSection(&g_csLog);
-#endif // USE_LOG
+		DisableThreadLibraryCalls(hInstance);  // Optional
 		break;
 	}
 	case DLL_PROCESS_DETACH:
@@ -159,13 +110,6 @@ BOOL APIENTRY DllMain(
 			UnhookWindowsHookEx(g_hHook);
 			g_hHook = NULL;
 		}
-#ifdef USE_LOG
-		if (hFile != INVALID_HANDLE_VALUE) {
-			CloseHandle(hFile);
-			hFile = INVALID_HANDLE_VALUE;
-		}
-		DeleteCriticalSection(&g_csLog);
-#endif // USE_LOG
 		break;
 	}
 	case DLL_THREAD_ATTACH:
@@ -177,44 +121,76 @@ BOOL APIENTRY DllMain(
 }
 
 
-
-
 LRESULT CALLBACK DirectUIWndProc(
 	HWND hWnd,
 	UINT msg,
 	WPARAM wParam,
 	LPARAM lParam)
 {
-	// Since the keys belong to DirectUIHWND, some capturing should occur here
+	DoubleClickHelper::ProcessMessage(msg, lParam);
+
 	switch (msg)
 	{
 
-	/*
-	case WM_STYLECHANGING: // Has no effect
-	case WM_SIZE: // Has no effect
-	case WM_RBUTTONDBLCLK: // Has no effect (Require the CS_DBLCLKS)
-	*/
+	case WM_MOUSEWHEEL:
+	{
+		// Forward event to the parent window
+		PostMessage(g_hOSKMainWnd, WM_MOUSEWHEEL, wParam, lParam);
+		return 0;
+	}
 
 	case WM_RBUTTONDOWN:
 	{
-		// Simulate the WM_RBUTTONDOWN event for the parent window
-		PostMessage(g_hOSKMainWnd, WM_MBUTTONDOWN, wParam, lParam);
+		// Forward event to the parent window
+		PostMessage(g_hOSKMainWnd, WM_RBUTTONDOWN, wParam, lParam);
 		return 0;
 	}
+
 	case WM_RBUTTONUP:
 	{
-		// If SetCapture() is called on button down, catch button up in MainWndProc.
+		// Forward event to the parent window
+		PostMessage(g_hOSKMainWnd, WM_RBUTTONUP, wParam, lParam);
 		return 0;
 	}
+
+	case WM_RBUTTONDBLCLK:
+	{
+		// Forward event to the parent window
+		PostMessage(g_hOSKMainWnd, WM_RBUTTONDBLCLK, wParam, lParam);
+		return 0;
+	}
+
 	case WM_MBUTTONDOWN:
 	{
-		// Simulate the same event for the parent window
+		// Forward event to the parent window
 		PostMessage(g_hOSKMainWnd, WM_MBUTTONDOWN, wParam, lParam);
 		return 0;
 	}
-	default:
+
+	case WM_MBUTTONUP:
+	{
+		// Forward event to the parent window
+		PostMessage(g_hOSKMainWnd, WM_MBUTTONUP, wParam, lParam);
+		return 0;
+	}
+
+	case WM_MBUTTONDBLCLK:
+	{
+		// Forward event to the parent window
+		PostMessage(g_hOSKMainWnd, WM_MBUTTONDBLCLK, wParam, lParam);
+		return 0;
+	}
+
+	case WM_MOUSEMOVE:
+	{
+		// Forward event to the parent window
+		PostMessage(g_hOSKMainWnd, WM_MOUSEMOVE, wParam, lParam);
 		break;
 	}
+
+	default: break;
+	}
+
 	return CallWindowProc(g_origDirectUIWndProc, hWnd, msg, wParam, lParam);
 }
 
@@ -225,21 +201,90 @@ LRESULT CALLBACK OSKMainWndProc(
 	WPARAM wParam,
 	LPARAM lParam)
 {
-	static bool g_isDragging{};
-	static POINT g_dragStartCursorPos{};
-	static RECT g_dragStartWindowRect{};
+	static WindowDragger windowDragger{};
+	static MouseTracker mouseTracker{ hWnd };
+	static Debouncer mouseWheelDebounce{ 100 };
+
 
 	switch (msg)
 	{
+	case WM_MOUSEMOVE:
+	{
+		mouseTracker.OnMouseMove();
 
-	/*
-	case WM_MOUSEACTIVATE: // Has no effect
-	case WM_ACTIVATE: // Has no effect
-	case WM_SIZING: // Has no effect
-	case WM_SIZE: // Affect DirectUI redraw
-	case WM_WINDOWPOSCHANGED: // Affect DirectUI redraw
-	case WM_GETMINMAXINFO: // Allow resizing the window to any values (currently buggy)
-	*/
+		windowDragger.OnMouseMove(
+			[&hWnd](const POINT& pt, nullptr_t) {
+				return SetWindowPos(
+					hWnd,
+					NULL,  // No change in Z-order relative to other windows
+					pt.x, pt.y,
+					0, 0,  // No change in size
+					SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+				) != 0;
+			},
+			nullptr
+		);
+
+		return 0;
+	}
+
+	case WM_MOUSELEAVE:
+	{
+		mouseTracker.OnMouseLeave();
+		return 0;
+	}
+
+	case WM_MOUSEWHEEL:
+	{
+		if (!mouseWheelDebounce.ShouldProcess()) { return 0; }
+
+		int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+		bool forward = delta > 0;
+
+		// Get installed keyboard layouts
+		int layoutCount = GetKeyboardLayoutList(0, nullptr);
+		if (layoutCount <= 1) {
+			return 0;
+		}  // No need to switch if <=1 layout
+
+		HKL* layouts = new HKL[layoutCount];
+		GetKeyboardLayoutList(layoutCount, layouts);
+
+		// Find current layout position
+		HWND hForegroundWnd = GetForegroundWindow();
+		DWORD threadProcessId = GetWindowThreadProcessId(hForegroundWnd, nullptr);
+		HKL current = GetKeyboardLayout(threadProcessId);
+		int currentIndex = -1;
+		for (int i{}; i < layoutCount; ++i) {
+			if (layouts[i] == current) {
+				currentIndex = i;
+				break;
+			}
+		}
+
+		if (currentIndex == -1) {
+			delete[] layouts;
+			return 0;
+		}
+
+		// Calculate new index with boundary checks
+		int newIndex = forward ? currentIndex + 1 : currentIndex - 1;
+		if (newIndex < 0 or newIndex >= layoutCount) {
+			delete[] layouts;
+			return 0;  // Stop at boundaries
+		}
+
+		// System-wide activation
+		HKL newLayout = layouts[newIndex];
+		ActivateKeyboardLayout(newLayout, KLF_ACTIVATE);
+
+		// Update taskbar and all applications
+		PostMessage(HWND_BROADCAST, WM_INPUTLANGCHANGE, 0, (LPARAM)newLayout);
+		PostMessage(hForegroundWnd, WM_INPUTLANGCHANGEREQUEST, INPUTLANGCHANGE_SYSCHARSET, (LPARAM)newLayout);
+
+		delete[] layouts;
+		return 0;
+	}
 
 	case WM_STYLECHANGING:
 	{
@@ -249,6 +294,7 @@ LRESULT CALLBACK OSKMainWndProc(
 		}
 		break;
 	}
+
 	case WM_WINDOWPOSCHANGING:
 	{
 		// Prevent changing the size and position when enabling `Dock` mode
@@ -259,46 +305,34 @@ LRESULT CALLBACK OSKMainWndProc(
 				| SWP_NOACTIVATE
 				| SWP_NOSENDCHANGING
 				);
-		}
-		return 0;
-	}
-	case WM_MOUSEMOVE:
-	{
-		// Drag implementation
-		if (g_isDragging) {
-			POINT ptCursor;
-			GetCursorPos(&ptCursor); // Get cursor screen coordinates
-			SetWindowPos( // Original position + delta
-				g_hOSKMainWnd, NULL,
-				g_dragStartWindowRect.left + (ptCursor.x - g_dragStartCursorPos.x),
-				g_dragStartWindowRect.top + (ptCursor.y - g_dragStartCursorPos.y),
-				0, 0,
-				SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
-			);
+			return 0;
 		}
 		break;
 	}
+
 	case WM_NCMBUTTONDOWN:
 	{
 		// Repositioning the First App on middle button down of the 'X'
 		if (wParam == HTCLOSE) {
 			PostMessage(
 				g_hTabTapMainWnd,
-				WM_COMMAND,
-				MAKEWPARAM(IDM_APP_SYNC_Y_POSITION, CONTROL),
+				WM_APP_CUSTOM_MESSAGE,
+				MAKEWPARAM(ID_APP_SYNC_Y_POSITION, 0),
 				(LPARAM)hWnd
 			);
 			return 0;
 		}
-		// TODO
+
 		if (wParam == HTSYSMENU) {
-			//MessageBox(hWnd, L"System menu icon clicked!", L"Detected", MB_OK);
+			// TODO
 			return 0;
 		}
+
 		// In general, it simulates a middle click in the client zone
-		SendMessage(hWnd, WM_MBUTTONDOWN, wParam, lParam); // Drag trigger
-		break;
+		PostMessage(hWnd, WM_MBUTTONDOWN, wParam, lParam); // Drag trigger
+		return 0;
 	}
+
 	case WM_NCMBUTTONUP:
 	{
 		// Hiding the OSK on middle button up of the 'X'
@@ -308,37 +342,62 @@ LRESULT CALLBACK OSKMainWndProc(
 		}
 		break;
 	}
-	case WM_NCLBUTTONDOWN:
-	{
-		break;
-	}
-	case WM_NCLBUTTONUP: // It skips the first trigger for some reason
-	{
-		break;
-	}
+
 	case WM_MBUTTONDOWN:
 	{
 		// Drag begin
-		SetCapture(g_hOSKMainWnd); // Redirect all mouse input to this window
-		GetCursorPos(&g_dragStartCursorPos);
-		GetWindowRect(g_hOSKMainWnd, &g_dragStartWindowRect);
-		g_isDragging = true;
-		return 0;
-	}
-	case WM_MBUTTONUP:
-	{
-		// Drag end
-		if (g_isDragging) {
-			ReleaseCapture();
-			g_isDragging = false;
+		if (!windowDragger.Enable(hWnd)) {
+			MessageBoxNotifier{
+				{ _T("Drag Error") },
+				{ _T("Failed to start drag operation. %s"),
+					ErrorMessageConverter(GetLastError()) }
+			}.ShowError(hWnd);
+			return 1;
 		}
 		return 0;
 	}
-	case WM_RBUTTONUP:
+
+	case WM_MBUTTONUP:
 	{
-		PostMessage(hWnd, WM_MBUTTONUP, wParam, lParam); // Drag stop trigger
+		// Drag end
+		if (!windowDragger.Disable()) {
+			MessageBoxNotifier{
+				{ _T("Drag Error") },
+				{ _T("Failed to finish drag operation. %s"),
+					ErrorMessageConverter(GetLastError()) }
+			}.ShowError(hWnd);
+			return 1;
+		}
 		return 0;
 	}
+
+	case WM_MBUTTONDBLCLK:
+	{
+		ShowWindow(hWnd, SW_HIDE);
+		return 0;
+	}
+
+	case WM_RBUTTONDOWN:
+	{
+		// Act as middle button
+		PostMessage(hWnd, WM_MBUTTONDOWN, wParam, lParam);
+		return 0;
+	}
+
+	case WM_RBUTTONUP:
+	{
+		// Act as middle button
+		PostMessage(hWnd, WM_MBUTTONUP, wParam, lParam);
+		return 0;
+	}
+
+	case WM_RBUTTONDBLCLK:
+	{
+		// Act as middle button
+		PostMessage(hWnd, WM_MBUTTONDBLCLK, wParam, lParam);
+		return 0;
+	}
+
 	case WM_CLOSE:
 	{
 		// Change the 'X' button’s behavior from 'Close' to 'Hide' and use lParam to indicate a real 'Close' event
@@ -348,100 +407,119 @@ LRESULT CALLBACK OSKMainWndProc(
 		ShowWindow(hWnd, SW_HIDE);
 		return 0; // Message handled
 	}
-	case WM_CAPTURECHANGED:
+
+	case WM_APP_CUSTOM_MESSAGE:
 	{
-		// Fallback: Ensure capture is released if mouse is lost
-		if ((HWND)lParam != hWnd) {
-			g_isDragging = false;
+		WORD wCommandId = LOWORD(wParam);
+
+		if (wCommandId == ID_APP_DIRECTUI_READY) {
+			if (!g_hDirectUIWnd) { break; }
+
+			// Store the original window procedure.
+			g_origDirectUIWndProc = reinterpret_cast<WNDPROC>(
+				GetWindowLongPtr(g_hDirectUIWnd, GWLP_WNDPROC)
+			);
+
+			// Subclass DirectUIHWND
+			SetWindowLongPtr(
+				g_hDirectUIWnd,
+				GWLP_WNDPROC,
+				(LONG_PTR)DirectUIWndProc
+			);
+			return 0;
 		}
-		break;
-	}
-	case WM_COMMAND:
-	{
-		if (HIWORD(wParam) == CONTROL) {
-			if (LOWORD(wParam) == IDM_APP_DIRECTUI_CREATED) {
-				//Subclass DirectUIHWND here, right after the CREATEWND event
-				if (!g_hDirectUIWnd) {
-					break;
-				}
-				// Store the original window procedure.
-				g_origDirectUIWndProc = reinterpret_cast<WNDPROC>(
-					GetWindowLongPtr(g_hDirectUIWnd, GWLP_WNDPROC)
-					);
-				// Subclass DirectUIHWND
-				SetWindowLongPtr(
-					g_hDirectUIWnd,
-					GWLP_WNDPROC,
-					(LONG_PTR)DirectUIWndProc
+
+		if (wCommandId == ID_APP_DOCKMODE) {
+			ShowWindow(hWnd, SW_HIDE);
+			LONG_PTR style = (NULL
+				//| WS_VISIBLE
+				| WS_CLIPSIBLINGS
+				| WS_CLIPCHILDREN
+				| WS_SYSMENU
+				//| WS_MINIMIZEBOX
 				);
-				return 0;
-			}
-			else if (LOWORD(wParam) == IDM_APP_DOCKMODE) {
-				ShowWindow(hWnd, SW_HIDE);
-				LONG_PTR style = (NULL
-					//| WS_VISIBLE
-					| WS_CLIPSIBLINGS
-					| WS_CLIPCHILDREN
-					| WS_SYSMENU
-					//| WS_MINIMIZEBOX
-					);
-				SetWindowLongPtr(hWnd, GWL_STYLE, style);
+			SetWindowLongPtr(hWnd, GWL_STYLE, style);
 
-				LONG_PTR exstyle = (NULL
-					| WS_EX_NOACTIVATE
-					| WS_EX_LAYERED
-					//| WS_EX_APPWINDOW
-					| WS_EX_WINDOWEDGE
-					| WS_EX_TOOLWINDOW
-					| WS_EX_TOPMOST
-					);
-				SetWindowLongPtr(hWnd, GWL_EXSTYLE, exstyle);
-				ShowWindow(hWnd, SW_SHOW);
-				return 0;
-			}
-			else if (LOWORD(wParam) == IDM_APP_REGULARMODE) {
-				ShowWindow(hWnd, SW_HIDE);
-				LONG_PTR style = (NULL
-					//| WS_VISIBLE
-					| WS_CLIPSIBLINGS
-					| WS_CLIPCHILDREN
-					| WS_BORDER
-					| WS_DLGFRAME
-					| WS_SYSMENU
-					| WS_THICKFRAME
-					//| WS_MINIMIZEBOX
-					);
-				SetWindowLongPtr(hWnd, GWL_STYLE, style);
+			LONG_PTR exstyle = (NULL
+				| WS_EX_NOACTIVATE
+				| WS_EX_LAYERED
+				//| WS_EX_APPWINDOW
+				| WS_EX_WINDOWEDGE
+				| WS_EX_TOOLWINDOW
+				| WS_EX_TOPMOST
+				);
+			SetWindowLongPtr(hWnd, GWL_EXSTYLE, exstyle);
 
-				LONG_PTR exstyle = (NULL
-					| WS_EX_NOACTIVATE
-					| WS_EX_LAYERED
-					//| WS_EX_APPWINDOW
-					| WS_EX_TOPMOST
-					);
-				SetWindowLongPtr(hWnd, GWL_EXSTYLE, exstyle);
-				ShowWindow(hWnd, SW_SHOW);
-				return 0;
-			}
+			ShowWindow(hWnd, SW_SHOW);
+			return 0;
 		}
-		break;
+
+		if (wCommandId == ID_APP_REGULARMODE) {
+			ShowWindow(hWnd, SW_HIDE);
+
+			LONG_PTR style = (NULL
+				//| WS_VISIBLE
+				| WS_CLIPSIBLINGS
+				| WS_CLIPCHILDREN
+				| WS_BORDER
+				| WS_DLGFRAME
+				| WS_SYSMENU
+				| WS_THICKFRAME
+				//| WS_MINIMIZEBOX
+				);
+			SetWindowLongPtr(hWnd, GWL_STYLE, style);
+
+			LONG_PTR exstyle = (NULL
+				| WS_EX_NOACTIVATE
+				| WS_EX_LAYERED
+				//| WS_EX_APPWINDOW
+				| WS_EX_TOPMOST
+				);
+			SetWindowLongPtr(hWnd, GWL_EXSTYLE, exstyle);
+
+			ShowWindow(hWnd, SW_SHOW);
+			return 0;
+		}
+
+		if (wCommandId == ID_APP_FADE) {
+			static BYTE opaque = 0xff;
+			static const BYTE MaxOpaque = 0xff;
+			static const BYTE MinOpaque = 0x20;
+
+			bool isIncrease = HIWORD(wParam);
+
+			if (isIncrease and opaque < MaxOpaque) {
+				opaque += 0x10;
+			}
+			else if (!isIncrease and opaque > MinOpaque) {
+				opaque -= 0x10;
+			}
+
+			SetLayeredWindowAttributes(
+				hWnd, 0,
+				opaque,
+				LWA_ALPHA
+			);
+
+			return 0;
+		}
+		return 1;
 	}
+
 	case WM_DESTROY:
 	{
 		break;
 	}
 
-	default:
-		break;
+	default: break;
 	}
+
 	return CallWindowProc(g_origOSKMainWndProc, hWnd, msg, wParam, lParam);
 }
 
 
-
-
 LRESULT CALLBACK CBTProc(
-	int nCode,
+	INT nCode,
 	WPARAM wParam,
 	LPARAM lParam)
 {
@@ -461,21 +539,21 @@ LRESULT CALLBACK CBTProc(
 			break;
 		}
 
-		if (wcscmp(szClassName, L"DirectUIHWND") == 0) {
+		if (wcscmp(szClassName, _T("DirectUIHWND")) == 0) {
 			// Store handle as global
 			g_hDirectUIWnd = hWnd;
 
 			// Notify that proc can be subclassed now
 			PostMessage(
 				g_hOSKMainWnd,
-				WM_COMMAND,
-				MAKEWPARAM(IDM_APP_DIRECTUI_CREATED, CONTROL),
+				WM_APP_CUSTOM_MESSAGE,
+				MAKEWPARAM(ID_APP_DIRECTUI_READY, 0),
 				(LPARAM)hWnd
 			);
 
 
 			// Open the named event created by the first app
-			HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE, L"OSKLoadEvent");
+			HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE, _T("OSKLoadEvent"));
 			if (hEvent != NULL) {
 				// Signal the event indicating that this app has finished loading
 				SetEvent(hEvent);
@@ -494,12 +572,12 @@ LRESULT CALLBACK CBTProc(
 			break;
 		}
 
-		if (wcscmp(szClassName, L"OSKMainClass") == 0) {
-			static bool bProcessed{}; // To process only once
+		if (_tcscmp(szClassName, _T("OSKMainClass")) == 0) {
+			static BOOL bProcessed{}; // To process only once
 			if (bProcessed) {
 				break;
 			}
-			bProcessed = true;
+			bProcessed = TRUE;
 
 
 			// Store the original window procedure
@@ -531,12 +609,12 @@ LRESULT CALLBACK CBTProc(
 			DeleteMenu(hSysMenu, SC_MAXIMIZE, MF_BYCOMMAND);
 
 			// Apply style changes
-			SetWindowPos(hWnd, nullptr, 0, 0, 0, 0,
+			SetWindowPos(hWnd, NULL, 0, 0, 0, 0,
 				SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 
 
 			// Store the first app handle as global
-			g_hTabTapMainWnd = FindWindow(L"TabTapMainClass", NULL);
+			g_hTabTapMainWnd = FindWindow(_T("TabTapMainClass"), NULL);
 
 			// Store the main handle as global
 			g_hOSKMainWnd = hWnd;
@@ -547,10 +625,16 @@ LRESULT CALLBACK CBTProc(
 			// Increment DLL reference count
 			HMODULE hMod;
 			if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)OSKMainWndProc, &hMod)) {
-				WCHAR dllPath[MAX_PATH];
-				GetModuleFileName(hMod, dllPath, MAX_PATH);
-				LoadLibrary(dllPath);
+				TCHAR pathBuffer[MAX_PATH];
+				GetModuleFileName(hMod, pathBuffer, MAX_PATH);
+				LoadLibrary(pathBuffer);
 			}
+
+#ifdef _DEBUG
+			// Set log path
+			LogManager::SetDirectory(_T("C:\\"));  // Picked OSK path by default
+#endif // _DEBUG
+
 		}
 		return 0;
 	}
@@ -562,12 +646,13 @@ LRESULT CALLBACK CBTProc(
 		return 1;
 	}
 	*/
-	default:
-		break;
+	default: break;
 	}
 
 	return CallNextHookEx(g_hHook, nCode, wParam, lParam);
 }
+
+
 
 
 
